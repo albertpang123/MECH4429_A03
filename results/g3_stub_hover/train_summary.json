@@ -1,0 +1,7 @@
+{
+  "run_name": "g3_stub_hover",
+  "checkpoint": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_stub_hover/model.zip",
+  "meta": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_stub_hover/meta.json",
+  "total_timesteps": 200704,
+  "results": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/results/g3_stub_hover"
+}

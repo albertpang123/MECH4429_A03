@@ -1,0 +1,3 @@
+episode,seed,return,length,terminated,truncated,done_reason,crashed,out_of_bounds,timeout,fault_active,final_position_error_m,max_position_error_m,position_rmse_m,final_z_m,max_clip_count,mean_clip_count
+0,100000,-95.38532145437651,29,True,False,crash,True,False,False,False,0.9561498396789886,0.9561498396789886,0.4216402198627991,0.04653997733458854,0,0.0
+1,100001,-94.81901766624661,26,True,False,crash,True,False,False,False,0.967172481423308,0.967172481423308,0.4847611070676632,0.03508272386847894,0,0.0

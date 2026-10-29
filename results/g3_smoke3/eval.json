@@ -1,0 +1,32 @@
+{
+  "run_name": "g3_smoke3",
+  "checkpoint": "checkpoints/g3_smoke3/model.zip",
+  "episodes": 2,
+  "seed_start": 100000,
+  "seed_end": 100001,
+  "deterministic": true,
+  "return_mean": -95.10216956031155,
+  "return_std": 0.2831518940649502,
+  "length_mean": 27.5,
+  "final_position_error_mean_m": 0.9616611605511483,
+  "final_position_error_max_m": 0.967172481423308,
+  "max_position_error_m": 0.967172481423308,
+  "position_rmse_mean_m": 0.45320066346523113,
+  "crash_rate": 1.0,
+  "out_of_bounds_rate": 0.0,
+  "timeout_rate": 0.0,
+  "all_survived": false,
+  "observation_normalisation": {
+    "dim": 170,
+    "history_len": 10,
+    "normalize": true,
+    "clip": 10.0,
+    "scales": {
+      "position_error": 1.0,
+      "linear_velocity": 1.0,
+      "attitude_quaternion": 1.0,
+      "angular_velocity": 10.0,
+      "last_motor_command": 1.0
+    }
+  }
+}

@@ -1,0 +1,12 @@
+# Normalise line endings so a Windows clone and an Ubuntu clone never produce
+# spurious diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.pptx binary
+*.zip binary
+*.pt binary
+*.pth binary
+*.npz binary

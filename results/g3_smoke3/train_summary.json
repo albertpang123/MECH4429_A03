@@ -1,0 +1,7 @@
+{
+  "run_name": "g3_smoke3",
+  "checkpoint": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_smoke3/model.zip",
+  "meta": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_smoke3/meta.json",
+  "total_timesteps": 4096,
+  "results": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/results/g3_smoke3"
+}

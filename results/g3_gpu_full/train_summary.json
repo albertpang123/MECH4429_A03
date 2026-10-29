@@ -1,0 +1,7 @@
+{
+  "run_name": "g3_gpu_full",
+  "checkpoint": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_gpu_full/model.zip",
+  "meta": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g3_gpu_full/meta.json",
+  "total_timesteps": 200704,
+  "results": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/results/g3_gpu_full"
+}
