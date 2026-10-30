@@ -12,21 +12,29 @@ from dataclasses import asdict
 
 import numpy as np
 
-from envs.interface import ACTION_DIM, CONTROL_HZ, Scenario
+from envs.interface import ACTION_DIM, Scenario
 
 
 class StubFaultInjector:
+    """Masks the failed rotor from ``Scenario.failure_time_s`` onwards.
+
+    The comparison is done on time, not control steps, so the injector needs no
+    copy of the control rate.  The environment quantises the failure time to the
+    control grid when it samples the scenario, so this stays step-exact without
+    a hidden ``CONTROL_HZ`` constant that could drift from the config.
+    """
+
     def __init__(self, scenario: Scenario) -> None:
         self.reset(scenario)
 
     def reset(self, scenario: Scenario) -> None:
         self.scenario = scenario
-        self._failure_step = scenario.failure_step
 
     def is_active(self, t_s: float) -> bool:
-        if self._failure_step is None:
+        failure_time = self.scenario.failure_time_s
+        if failure_time is None:
             return False
-        return self._step_from_time(t_s) >= self._failure_step
+        return float(t_s) >= float(failure_time) - 1e-9
 
     def apply(self, u_cmd: np.ndarray, t_s: float) -> np.ndarray:
         u = np.asarray(u_cmd, dtype=np.float64).reshape(-1)
@@ -40,7 +48,3 @@ class StubFaultInjector:
     def describe(self) -> dict:
         """Logging/evaluation only.  Never feed this into the observation."""
         return asdict(self.scenario)
-
-    @staticmethod
-    def _step_from_time(t_s: float) -> int:
-        return int(np.floor(float(t_s) * CONTROL_HZ + 0.5))

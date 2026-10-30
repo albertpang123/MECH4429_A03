@@ -31,13 +31,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from envs.config import config_hash, load_config, validate_structure  # noqa: E402
 from envs.quadrotor_env import QuadrotorEnv  # noqa: E402
 from eval.plotting import plot_learning_curve  # noqa: E402
-
-
-def load_config(path: str | Path) -> dict:
-    with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
 
 
 def unique_run_dir(base: Path, name: str) -> Path:
@@ -66,9 +62,18 @@ def main() -> int:
     parser.add_argument("--n-envs", type=int, default=None)
     parser.add_argument("--name", default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="resolve 'extends' and print the merged config, then exit",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
+    if args.print_config:
+        print(yaml.safe_dump(config, sort_keys=False))
+        print(f"# config_sha256: {config_hash(config)}")
+        return 0
     if args.timesteps is not None:
         config["run"]["total_timesteps"] = int(args.timesteps)
     if args.n_envs is not None:
@@ -77,6 +82,10 @@ def main() -> int:
         config["run"]["name"] = args.name
     if args.device is not None:
         config["run"]["device"] = args.device
+
+    # Refuse to start a long run on a config whose vehicle parameters are still
+    # TBD, rather than discovering it at the first environment step.
+    validate_structure(config, expect_resolved=True)
 
     seed = int(config["run"]["seed"])
     n_envs = int(config["run"]["n_envs"])
@@ -168,11 +177,18 @@ def main() -> int:
             "scales": config["observation"]["scales"],
         },
         "action": {
+            # Read from the space that is actually in use, not from config: the
+            # bounds are structural (see envs.interface).
             "dim": int(vec_env.action_space.shape[0]),
-            "low": float(config["action"]["low"]),
-            "high": float(config["action"]["high"]),
+            "low": float(vec_env.action_space.low[0]),
+            "high": float(vec_env.action_space.high[0]),
         },
         "target_position": config["env"]["target_position"],
+        # Two runs with the same digest used the same resolved parameters; the
+        # full resolved config is stored below, so a result can always be traced
+        # back to the values that produced it.
+        "config_sha256": config_hash(config),
+        "config_sources": config.get("_provenance", {}),
         "versions": {
             "python": sys.version.split()[0],
             "torch": torch.__version__,

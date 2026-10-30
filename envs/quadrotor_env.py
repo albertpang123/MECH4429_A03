@@ -18,31 +18,21 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from envs.config import validate_structure
 from envs.interface import (
     ACTION_DIM,
     ACTION_HIGH,
     ACTION_LOW,
-    CONTROL_HZ,
-    OBS_FIELD_SCALES,
-    OBS_FRAME_DIM,
-    OBS_FRAME_FIELDS,
     ObservationBuffer,
     Scenario,
     VehicleState,
+    frame_scales,
+    observation_dim,
+    quantise_to_control_grid,
 )
 from envs.quat import quat_from_rpy
 from envs.stub_dynamics import StubDynamics, StubParams
 from envs.stub_faults import StubFaultInjector
-
-
-def _observation_scales(config: dict) -> np.ndarray:
-    values = []
-    for name, dim in OBS_FRAME_FIELDS:
-        scale = float(config["scales"][name])
-        if scale <= 0.0:
-            raise ValueError(f"observation.scales.{name} must be positive")
-        values.extend([scale] * dim)
-    return np.asarray(values, dtype=np.float64)
 
 
 class QuadrotorEnv(gym.Env):
@@ -50,6 +40,7 @@ class QuadrotorEnv(gym.Env):
 
     def __init__(self, config: dict, dynamics: Optional[StubDynamics] = None) -> None:
         super().__init__()
+        validate_structure(config)
         self.config = config
 
         env_cfg = config["env"]
@@ -75,8 +66,8 @@ class QuadrotorEnv(gym.Env):
         self.history_len = int(obs_cfg["history_len"])
         self.normalize_obs = bool(obs_cfg["normalize"])
         self.obs_clip = float(obs_cfg["clip"])
-        self.obs_dim = OBS_FRAME_DIM * self.history_len
-        self._obs_scales = _observation_scales(obs_cfg)
+        self.obs_dim = observation_dim(self.history_len)
+        self._obs_scales = frame_scales(obs_cfg["scales"])
 
         if self.normalize_obs:
             obs_low, obs_high = -self.obs_clip, self.obs_clip
@@ -175,6 +166,12 @@ class QuadrotorEnv(gym.Env):
             effectiveness = float(random_cfg["effectiveness"])
         elif mode != "nominal":
             raise ValueError(f"unknown faults.mode: {mode}")
+
+        if failure_time_s is not None:
+            # Snap to the control grid so the logged scenario is the step the
+            # fault actually takes effect on. Uses the configured rate, not a
+            # module constant.
+            failure_time_s = quantise_to_control_grid(failure_time_s, self.control_hz)
 
         return Scenario(
             rotor_id=rotor_id,

@@ -32,9 +32,10 @@ the code we compare against. Everyone else should be able to reproduce the same 
 ## Repository layout
 
 ```
-configs/            base.yaml (G0 spec) + one YAML per run
+configs/            base.yaml (G0 spec) + one YAML per run, each extending base
 envs/
-  interface.py      shared types, rotor geometry, observation layout  <- start here
+  interface.py      shared types, observation layout, structural rotor order  <- start here
+  config.py         config loading, inheritance, digest, validation
   quat.py           quaternion helpers
   quadrotor_env.py  Gymnasium task (observation, action, reward, termination)
   stub_dynamics.py  G1 placeholder: 6-DOF rigid body, NumPy
@@ -93,6 +94,34 @@ env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
 Overrides: `--timesteps`, `--n-envs`, `--name`, `--device` for training;
 `--episodes`, `--seed-start`, `--out` for evaluation.
 
+### Changing parameters
+
+Every tunable value lives in `configs/base.yaml`: vehicle parameters, reward weights,
+termination thresholds, observation scales, reset jitter. Run configs extend it and override
+only what differs, so a shared value is edited in **one** place:
+
+```yaml
+# configs/my_run.yaml
+extends: base.yaml
+dynamics:
+  mass_kg: 0.5
+```
+
+```bash
+# show the fully merged config and its digest, without training
+env -u PYTHONPATH /home/albertpang/miniconda3/envs/uav-g3/bin/python \
+  -m train.train_ppo --config configs/g3_hover.yaml --print-config
+```
+
+Load configs with `envs.config.load_config`, not `yaml.safe_load` — a bare load returns the
+child file alone and silently drops everything it inherits. Each run writes the **resolved**
+config and its `config_sha256` into `meta.json`, so a result can always be traced back to the
+values that produced it.
+
+Structural values are deliberately *not* configurable: the rotor index/label/spin order, the
+`[0, 1]` action bounds and the 17-field observation layout are the interface, and changing
+them invalidates every existing checkpoint.
+
 **GPU (opt-in).** Pass `--device cuda` and do **not** set `CUDA_VISIBLE_DEVICES=""`. On the
 RTX 4080 Laptop this works through CUDA forward compatibility (compute capability 8.9,
 driver 580.178.04 / CUDA 13.0) — a supported-enough combination for experiments, not an
@@ -144,8 +173,9 @@ These are deliberate; they go away when G1/G2 land, but do not build on them:
 
 * `QuadrotorEnv` constructs `StubFaultInjector` itself (`envs/quadrotor_env.py`) — the fault
   module is not injectable yet, unlike the dynamics.
-* `ROTOR_ARM_M` is defined in `envs/interface.py` and repeated in each config; a mismatch is a
-  loud `assert` at construction, not a silent one.
+* Rotor positions are vehicle data in the config, but the stub assumes a symmetric X for the
+  *thrust* terms only through the positions themselves; a non-symmetric airframe is accepted
+  without warning. Compare against `nominal_x_positions()` if that matters.
 * Action → thrust is assumed **linear** (`f = T_max · u`). If the real mapping becomes
   quadratic in RPM, existing checkpoints stop meaning the same thing.
 

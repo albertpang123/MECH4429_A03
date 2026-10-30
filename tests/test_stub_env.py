@@ -9,13 +9,16 @@ import yaml
 
 pytest.importorskip("gymnasium")
 
-from envs.interface import ACTION_DIM, CONTROL_HZ, OBS_DIM, ROTOR_ARM_M, Scenario, VehicleState
+from envs.config import load_config
+from envs.interface import ACTION_DIM, Scenario, VehicleState
 from envs.quadrotor_env import QuadrotorEnv
 from envs.stub_dynamics import StubDynamics, StubParams
 from envs.stub_faults import StubFaultInjector
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = yaml.safe_load((ROOT / "configs" / "g3_hover.yaml").read_text(encoding="utf-8"))
+CONFIG = load_config(ROOT / "configs" / "g3_hover.yaml")
+BASE_CONFIG = load_config(ROOT / "configs" / "base.yaml")
+CONTROL_HZ = float(CONFIG["env"]["control_hz"])
 
 
 def _trim_config():
@@ -56,12 +59,37 @@ def _run_hover(env: QuadrotorEnv, steps: int):
 # ---------------------------------------------------------------------------
 # Physics
 # ---------------------------------------------------------------------------
-def test_stub_parameters_match_interface_geometry():
+def test_stub_parameters_match_config_geometry():
     params = StubParams.from_config(CONFIG)
-    assert np.isclose(params.arm_length_m, ROTOR_ARM_M)
+    assert np.allclose(
+        np.asarray(params.rotor_positions_body_m),
+        np.asarray(CONFIG["dynamics"]["rotor_positions_body_m"]),
+    )
+    assert np.isclose(params.arm_length_m, 0.092, atol=1e-6)
     assert params.mass_kg > 0.0
     assert params.thrust_max_per_rotor_n > 0.0
-    StubDynamics(params)  # raises if the geometry disagrees
+    StubDynamics(params)
+
+
+def test_rotor_geometry_is_driven_by_config():
+    # Changing the airframe is a config edit, not a source edit: nothing in the
+    # code holds an arm length of its own.
+    config = copy.deepcopy(CONFIG)
+    config["dynamics"]["rotor_positions_body_m"] = [
+        [2.0 * x, 2.0 * y] for x, y in CONFIG["dynamics"]["rotor_positions_body_m"]
+    ]
+    params = StubParams.from_config(config)
+    dynamics = StubDynamics(params)
+    assert np.isclose(params.arm_length_m, 0.184, atol=1e-6)
+    assert np.allclose(
+        dynamics._positions,
+        np.asarray(config["dynamics"]["rotor_positions_body_m"]),
+    )
+
+
+def test_unfilled_dynamics_names_the_owner():
+    with pytest.raises(ValueError, match="Andy"):
+        StubParams.from_config(BASE_CONFIG)
 
 
 def test_hover_trim_is_stationary():
@@ -111,12 +139,37 @@ def test_fault_injector_supports_partial_effectiveness():
 def test_spaces_and_reset():
     env = QuadrotorEnv(_trim_config())
     obs, info = env.reset(seed=0)
-    assert obs.shape == (OBS_DIM,)
+    assert obs.shape == (170,)
     assert obs.dtype == np.float32
+    assert env.obs_dim == 170
     assert env.action_space.shape == (ACTION_DIM,)
-    assert env.observation_space.shape == (OBS_DIM,)
+    assert env.observation_space.shape == (170,)
     assert info["seed"] == 0
     assert info["scenario"]["rotor_id"] is None
+
+
+def test_control_rate_is_taken_from_config():
+    # Regression: the fault module used to import a module-level CONTROL_HZ, so
+    # editing env.control_hz in the config silently left fault timing at 60 Hz.
+    config = _trim_config()
+    config["env"]["physics_hz"] = 240.0
+    config["env"]["control_hz"] = 120.0
+    config["faults"]["mode"] = "fixed"
+    config["faults"]["fixed"] = {
+        "rotor_id": 1,
+        "failure_time_s": 2.0,
+        "effectiveness": 0.0,
+    }
+    env = QuadrotorEnv(config)
+    assert env.physics_steps_per_control == 2
+    assert env.max_steps == 1200
+
+    _, info = env.reset(seed=0)
+    assert info["scenario"]["failure_time_s"] == 2.0
+    # 2.0 s at 120 Hz is step 240, not step 120.
+    assert env._injector.scenario.failure_step(env.control_hz) == 240
+    assert not env._injector.is_active(2.0 - 1.0 / env.control_hz)
+    assert env._injector.is_active(2.0)
 
 
 def test_reset_is_deterministic_for_the_same_seed():

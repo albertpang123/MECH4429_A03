@@ -1,6 +1,15 @@
 # Gate 0 interface config — canonical nominal run.
 # Draft (2026-10-25). See docs/INTERFACE.md; settle at the 28 Oct meeting.
 # One file per run; no code in configs. Values marked TBD are owned by the named person.
+#
+# Run configs inherit from this file with `extends: base.yaml` and override only
+# what differs — see envs/config.py. Load configs with envs.config.load_config
+# (or `python -m train.train_ppo --config <file> --print-config` to inspect the
+# merged result); a bare yaml.safe_load would drop every inherited value.
+#
+# Structural values are deliberately NOT here: four rotors, their index order and
+# spin direction, the observation field list, [0,1] action bounds and the
+# quaternion layout are the interface itself and live in envs/interface.py.
 
 schema_version: 1
 status: proposed
@@ -15,22 +24,23 @@ env:
   episode_length_s: 10.0   # 600 control steps
   target_position: [0.0, 0.0, 1.0]   # hold point, world ENU, m
 
+reset:
+  position_jitter_m: 0.10
+  velocity_jitter_mps: 0.10
+  tilt_jitter_deg: 2.0
+  yaw_jitter_deg: 5.0
+
 observation:
   history_len: 10          # frames stacked oldest -> newest
   normalize: true
   clip: 10.0               # clip after dividing by the scales
-  # Per-field normalisation scales (the same order as the observation layout).
+  # Per-field normalisation scales (keys must match the observation layout).
   scales:
     position_error: 1.0        # m
     linear_velocity: 1.0       # m/s
     attitude_quaternion: 1.0   # unit quaternion
     angular_velocity: 10.0     # rad/s
     last_motor_command: 1.0    # normalised [0, 1]
-
-action:
-  dim: 4
-  low: 0.0
-  high: 1.0
 
 reward:
   alive: 1.0
@@ -49,11 +59,16 @@ termination:
   use_ground_contact: false  # TBD: Andy/Joe decide whether PyBullet contacts are used
 
 dynamics:
-  # Owned by Andy (G1). Null means "not agreed yet"; the G3 stub may use provisional
-  # values locally but must not commit them as the interface.
+  # Owned by Andy (G1). Null means "not agreed yet"; a run config must fill each
+  # of these in before training (StubParams.from_config names the owner on error).
+  # Rotor positions are vehicle data, not interface: put the CAD measurement here
+  # as (x forward, y left) in metres, relative to the centre of mass, in the fixed
+  # R0 front-right / R1 front-left / R2 rear-left / R3 rear-right order.
+  # For a symmetric X with CoM-to-rotor distance L, each rotor is at
+  # (+-L/sqrt(2), +-L/sqrt(2)); envs.interface.nominal_x_positions(L) gives them.
+  rotor_positions_body_m: null   # [[x, y] x 4], m, body FLU
   mass_kg: null
-  arm_length_m: null       # CoM to rotor axis; rotors at (+-L/sqrt(2), +-L/sqrt(2))
-  inertia_kgm2: null       # [Ixx, Iyy, Izz]
+  inertia_kgm2: null       # [Ixx, Iyy, Izz] about the CoM, body frame
   thrust_max_per_rotor_n: null
   thrust_curve: linear     # f = T_max * u_applied
   drag_torque_ratio_m: null  # kappa = rotor torque / thrust, N*m/N

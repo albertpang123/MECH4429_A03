@@ -16,23 +16,16 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, Optional, Sequence, Tuple
+from typing import Deque, Dict, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
 # ---------------------------------------------------------------------------
 # Timing (docs/INTERFACE.md section 3)
 # ---------------------------------------------------------------------------
-PHYSICS_HZ = 240.0
-CONTROL_HZ = 60.0
-CONTROL_DT = 1.0 / CONTROL_HZ
-
-_steps_per_control = PHYSICS_HZ / CONTROL_HZ
-if not float(_steps_per_control).is_integer():
-    raise RuntimeError(
-        f"physics_hz / control_hz must be an integer, got {_steps_per_control}"
-    )
-PHYSICS_STEPS_PER_CONTROL = int(_steps_per_control)
+# The rates themselves live in configs/base.yaml (env.physics_hz / control_hz).
+# Nothing here caches them: a module-level copy is exactly how a config edit
+# ends up silently ignored by half the pipeline.
 
 
 # ---------------------------------------------------------------------------
@@ -45,15 +38,23 @@ QUATERNION_LAYOUT = "Hamilton, body -> world, scalar-last (x, y, z, w)"
 SPIN_CCW = +1  # seen from above, i.e. about +z
 SPIN_CW = -1
 
-# Provisional arm length (Crazyflie-like).  Owned by Andy; changing it changes
-# only this constant and configs/base.yaml: dynamics.arm_length_m.
-ROTOR_ARM_M = 0.092
-_ARM_OFFSET_M = ROTOR_ARM_M / np.sqrt(2.0)
+# Structure, not geometry: index order, label and spin direction are part of the
+# interface and must not be reordered.  The *positions* are vehicle data and
+# come from configs/base.yaml: dynamics.rotor_positions_body_m, so a new airframe
+# does not require a code change.
+ROTOR_LAYOUT: Tuple[Tuple[str, int], ...] = (
+    ("front-right", SPIN_CW),
+    ("front-left", SPIN_CCW),
+    ("rear-left", SPIN_CW),
+    ("rear-right", SPIN_CCW),
+)
+
+N_ROTORS = len(ROTOR_LAYOUT)
 
 
 @dataclass(frozen=True)
 class Rotor:
-    """One rotor in the X configuration, expressed in the body frame."""
+    """One rotor in the body frame, at an index fixed by ``ROTOR_LAYOUT``."""
 
     index: int
     x_m: float
@@ -61,15 +62,46 @@ class Rotor:
     spin: int  # SPIN_CCW (+1) or SPIN_CW (-1)
     label: str
 
+    @property
+    def position_m(self) -> np.ndarray:
+        return np.array([self.x_m, self.y_m], dtype=np.float64)
 
-ROTORS: Tuple[Rotor, ...] = (
-    Rotor(0, +_ARM_OFFSET_M, -_ARM_OFFSET_M, SPIN_CW, "front-right"),
-    Rotor(1, +_ARM_OFFSET_M, +_ARM_OFFSET_M, SPIN_CCW, "front-left"),
-    Rotor(2, -_ARM_OFFSET_M, +_ARM_OFFSET_M, SPIN_CW, "rear-left"),
-    Rotor(3, -_ARM_OFFSET_M, -_ARM_OFFSET_M, SPIN_CCW, "rear-right"),
-)
 
-N_ROTORS = len(ROTORS)
+def nominal_x_positions(arm_length_m: float) -> np.ndarray:
+    """Positions for a symmetric X layout, ``(N_ROTORS, 2)``, body frame.
+
+    ``arm_length_m`` is the CoM-to-rotor distance, so each rotor sits at
+    ``(±L/√2, ±L/√2)``.  This is a helper for writing a config; the config
+    itself always stores explicit positions.
+    """
+    if arm_length_m <= 0.0:
+        raise ValueError("arm_length_m must be positive")
+    offset = float(arm_length_m) / np.sqrt(2.0)
+    return np.array(
+        [
+            [+offset, -offset],  # 0 front-right
+            [+offset, +offset],  # 1 front-left
+            [-offset, +offset],  # 2 rear-left
+            [-offset, -offset],  # 3 rear-right
+        ],
+        dtype=np.float64,
+    )
+
+
+def build_rotors(rotor_positions_body_m: Sequence[Sequence[float]]) -> Tuple[Rotor, ...]:
+    """Pair the configured positions with the fixed index/label/spin order."""
+    positions = np.asarray(rotor_positions_body_m, dtype=np.float64)
+    if positions.shape != (N_ROTORS, 2):
+        raise ValueError(
+            f"rotor positions must have shape ({N_ROTORS}, 2) [x, y] in metres, "
+            f"got {positions.shape}"
+        )
+    if not np.all(np.isfinite(positions)):
+        raise ValueError("rotor positions must be finite")
+    return tuple(
+        Rotor(index, float(x), float(y), ROTOR_LAYOUT[index][1], ROTOR_LAYOUT[index][0])
+        for index, (x, y) in enumerate(positions)
+    )
 
 # Fields of Scenario that must never reach the policy observation.
 HIDDEN_FROM_POLICY: Tuple[str, ...] = (
@@ -83,6 +115,8 @@ HIDDEN_FROM_POLICY: Tuple[str, ...] = (
 # ---------------------------------------------------------------------------
 # Action space (docs/INTERFACE.md section 5)
 # ---------------------------------------------------------------------------
+# Bounds are structural: a "normalised motor command" is defined as [0, 1].
+# Changing them changes the interface, not a tunable, so they are not in config.
 ACTION_DIM = N_ROTORS
 ACTION_LOW = 0.0
 ACTION_HIGH = 1.0
@@ -100,22 +134,29 @@ OBS_FRAME_FIELDS: Tuple[Tuple[str, int], ...] = (
 )
 OBS_FRAME_DIM = sum(dim for _, dim in OBS_FRAME_FIELDS)  # 17
 
-OBS_HISTORY_LEN = 10
-OBS_DIM = OBS_FRAME_DIM * OBS_HISTORY_LEN  # 170
-OBS_CLIP = 10.0
 
-# Fixed normalisation scales, one per field (see configs/base.yaml).
-OBS_FIELD_SCALES: Dict[str, float] = {
-    "position_error": 1.0,       # m
-    "linear_velocity": 1.0,      # m/s
-    "attitude_quaternion": 1.0,  # unit quaternion
-    "angular_velocity": 10.0,    # rad/s
-    "last_motor_command": 1.0,   # normalised [0, 1]
-}
-OBS_SCALES = np.concatenate(
-    [np.full(dim, OBS_FIELD_SCALES[name], dtype=np.float64)
-     for name, dim in OBS_FRAME_FIELDS]
-)
+def observation_dim(history_len: int) -> int:
+    """Flat observation size for a given history length."""
+    if int(history_len) < 1:
+        raise ValueError("history_len must be >= 1")
+    return OBS_FRAME_DIM * int(history_len)
+
+
+def frame_scales(scale_map: Mapping[str, float]) -> np.ndarray:
+    """Expand ``observation.scales`` to one positive scale per observation value.
+
+    Lives here rather than in the environment so the buffer and the env cannot
+    disagree about the field order.
+    """
+    values = []
+    for name, dim in OBS_FRAME_FIELDS:
+        if name not in scale_map:
+            raise KeyError(f"observation.scales is missing '{name}'")
+        scale = float(scale_map[name])
+        if scale <= 0.0:
+            raise ValueError(f"observation.scales.{name} must be positive")
+        values.extend([scale] * dim)
+    return np.asarray(values, dtype=np.float64)
 
 
 def observation_slices() -> Dict[str, slice]:
@@ -201,16 +242,29 @@ class Scenario:
     def is_nominal(self) -> bool:
         return self.rotor_id is None
 
-    @property
-    def failure_step(self) -> Optional[int]:
+    def failure_step(self, control_hz: float) -> Optional[int]:
         """Control step at which the fault takes effect, or None.
 
-        The failure time is quantised to the control grid so that a scenario is
-        reproducible regardless of physics-step ordering.
+        The control rate is passed in rather than read from a module constant:
+        it is an ``env.control_hz`` setting, and a cached copy here would drift
+        out of sync the moment someone changed the config.
         """
         if self.failure_time_s is None:
             return None
-        return int(np.floor(self.failure_time_s * CONTROL_HZ + 0.5))
+        return int(np.floor(self.failure_time_s * float(control_hz) + 0.5))
+
+
+def quantise_to_control_grid(t_s: float, control_hz: float) -> float:
+    """Snap a time to the nearest control step.
+
+    The environment quantises the sampled failure time, so the value recorded in
+    the scenario is the step the fault actually takes effect on — no off-by-one
+    between the log and the physics.
+    """
+    if control_hz <= 0.0:
+        raise ValueError("control_hz must be positive")
+    step = int(np.floor(float(t_s) * float(control_hz) + 0.5))
+    return step / float(control_hz)
 
 
 def observation_frame(
@@ -244,24 +298,22 @@ class ObservationBuffer:
     """Stack the last ``history_len`` frames, oldest first.
 
     On reset the buffer is filled with the initial frame repeated
-    ``history_len`` times, so the array always has shape (OBS_DIM,) and there
-    is no artificial zero-padding transient.
+    ``history_len`` times, so the array always has shape ``(dim,)`` and there is
+    no artificial zero-padding transient.
 
     Usage::
 
-        buf = ObservationBuffer(target_position=(0, 0, 1))
-        buf.reset(state)
-        obs = buf.as_array()              # after reset
-        buf.push(state, u_prev)           # once per control step
-        obs = buf.as_array()
+        buf = ObservationBuffer.from_config(config)
+        obs = buf.reset(state)            # after reset
+        obs = buf.push(state, u_prev)     # once per control step
     """
 
     def __init__(
         self,
         target_position: Sequence[float],
-        history_len: int = OBS_HISTORY_LEN,
+        history_len: int,
         normalize: bool = True,
-        clip: float = OBS_CLIP,
+        clip: float = 10.0,
         scales: Optional[Sequence[float]] = None,
     ) -> None:
         if history_len < 1:
@@ -271,12 +323,36 @@ class ObservationBuffer:
         self.normalize = bool(normalize)
         self.clip = float(clip)
         if scales is None:
-            self.scales = OBS_SCALES.copy()
+            # No normalisation table baked in here: the scales are config, and a
+            # default copy is how two sources of truth appear.
+            self.scales = np.ones(OBS_FRAME_DIM, dtype=np.float64)
         else:
             self.scales = _as_vector(scales, OBS_FRAME_DIM, "scales")
             if np.any(self.scales <= 0.0):
                 raise ValueError("scales must be positive")
         self._frames: Deque[np.ndarray] = deque(maxlen=self.history_len)
+
+    @property
+    def dim(self) -> int:
+        return observation_dim(self.history_len)
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Mapping,
+        target_position: Optional[Sequence[float]] = None,
+    ) -> "ObservationBuffer":
+        """Build from a resolved config (see :func:`envs.config.load_config`)."""
+        obs_cfg = config["observation"]
+        if target_position is None:
+            target_position = config["env"]["target_position"]
+        return cls(
+            target_position=target_position,
+            history_len=int(obs_cfg["history_len"]),
+            normalize=bool(obs_cfg["normalize"]),
+            clip=float(obs_cfg["clip"]),
+            scales=frame_scales(obs_cfg["scales"]),
+        )
 
     def reset(
         self,

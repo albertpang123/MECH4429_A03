@@ -19,7 +19,13 @@ from typing import Sequence, Tuple
 
 import numpy as np
 
-from envs.interface import ACTION_DIM, ROTOR_ARM_M, ROTORS, VehicleState
+from envs.interface import (
+    ACTION_DIM,
+    N_ROTORS,
+    VehicleState,
+    build_rotors,
+    nominal_x_positions,
+)
 from envs.quat import (
     normalize_quaternion,
     quat_derivative,
@@ -29,11 +35,22 @@ from envs.quat import (
 GRAVITY_MPS2 = 9.81
 
 
+def _require(d: dict, key: str, owner: str) -> float:
+    """Read a required dynamics value, naming the owner when it is still TBD."""
+    value = d.get(key)
+    if value is None:
+        raise ValueError(
+            f"dynamics.{key} is null in the config — it is {owner}'s parameter "
+            "(Gate 0 / vehicle data); fill it in before running"
+        )
+    return float(value)
+
+
 @dataclass(frozen=True)
 class StubParams:
     mass_kg: float
     inertia_kgm2: Tuple[float, float, float]
-    arm_length_m: float
+    rotor_positions_body_m: Tuple[Tuple[float, float], ...]
     thrust_max_per_rotor_n: float
     drag_torque_ratio_m: float
     linear_drag_n_per_mps: float = 0.0
@@ -46,6 +63,12 @@ class StubParams:
             raise ValueError("mass_kg must be positive")
         if len(self.inertia_kgm2) != 3 or min(self.inertia_kgm2) <= 0.0:
             raise ValueError("inertia_kgm2 must be three positive values")
+        positions = np.asarray(self.rotor_positions_body_m, dtype=np.float64)
+        if positions.shape != (N_ROTORS, 2):
+            raise ValueError(
+                f"rotor_positions_body_m must have shape ({N_ROTORS}, 2), "
+                f"got {positions.shape}"
+            )
         if self.thrust_max_per_rotor_n <= 0.0:
             raise ValueError("thrust_max_per_rotor_n must be positive")
         if self.thrust_curve not in ("linear", "quadratic"):
@@ -53,15 +76,35 @@ class StubParams:
         if self.motor_time_constant_s != 0.0:
             raise NotImplementedError("motor lag is not implemented in the stub")
 
+    @property
+    def arm_length_m(self) -> float:
+        """CoM-to-rotor distance implied by the positions (reporting only)."""
+        positions = np.asarray(self.rotor_positions_body_m, dtype=np.float64)
+        return float(np.max(np.linalg.norm(positions, axis=1)))
+
     @classmethod
     def from_config(cls, config: dict) -> "StubParams":
         d = config["dynamics"]
+        positions = d.get("rotor_positions_body_m")
+        if positions is None and d.get("arm_length_m") is not None:
+            # Checkpoints trained before 2026-10-30 carry a single arm length in
+            # their meta.json instead of explicit positions.  Keep them
+            # loadable; new configs always use rotor_positions_body_m.
+            positions = nominal_x_positions(float(d["arm_length_m"]))
+        if positions is None:
+            raise ValueError(
+                "dynamics.rotor_positions_body_m is null in the config — it is "
+                "Andy's parameter (rotor positions from the CAD, Gate 0); fill it "
+                "in before running"
+            )
         return cls(
-            mass_kg=float(d["mass_kg"]),
+            mass_kg=_require(d, "mass_kg", "Andy"),
             inertia_kgm2=tuple(float(x) for x in d["inertia_kgm2"]),
-            arm_length_m=float(d["arm_length_m"]),
-            thrust_max_per_rotor_n=float(d["thrust_max_per_rotor_n"]),
-            drag_torque_ratio_m=float(d["drag_torque_ratio_m"]),
+            rotor_positions_body_m=tuple(
+                (float(x), float(y)) for x, y in positions
+            ),
+            thrust_max_per_rotor_n=_require(d, "thrust_max_per_rotor_n", "Andy"),
+            drag_torque_ratio_m=_require(d, "drag_torque_ratio_m", "Andy"),
             linear_drag_n_per_mps=float(d.get("linear_drag_n_per_mps", 0.0)),
             angular_drag_nm_per_radps=float(d.get("angular_drag_nm_per_radps", 0.0)),
             thrust_curve=str(d.get("thrust_curve", "linear")),
@@ -74,14 +117,9 @@ class StubDynamics:
 
     def __init__(self, params: StubParams) -> None:
         self.params = params
-        if not np.isclose(params.arm_length_m, ROTOR_ARM_M):
-            raise ValueError(
-                "config dynamics.arm_length_m does not match the shared rotor "
-                f"geometry (ROTOR_ARM_M={ROTOR_ARM_M}); update envs/interface.py "
-                "and docs/rotor_layout.svg together"
-            )
-        self._positions = np.array([[r.x_m, r.y_m] for r in ROTORS], dtype=np.float64)
-        self._spins = np.array([r.spin for r in ROTORS], dtype=np.float64)
+        rotors = build_rotors(params.rotor_positions_body_m)
+        self._positions = np.array([[r.x_m, r.y_m] for r in rotors], dtype=np.float64)
+        self._spins = np.array([r.spin for r in rotors], dtype=np.float64)
         self._inertia = np.asarray(params.inertia_kgm2, dtype=np.float64)
         self._inv_inertia = 1.0 / self._inertia
 

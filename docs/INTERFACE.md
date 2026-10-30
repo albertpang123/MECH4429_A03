@@ -1,6 +1,6 @@
 # Gate 0 — Interface Proposal
 
-Draft v0.1 · 2026-10-25 · Albert
+Draft v0.2 · 2026-10-30 · Albert
 
 The point of G0 is simple: the three modules should use the same conventions, so we can
 work in parallel without re-writing each other's code later. This is a proposal, not a
@@ -36,9 +36,16 @@ scalar-last quaternions, since PyBullet already uses them and there is no conver
 
 ![Rotor layout](rotor_layout.svg)
 
-`L = arm_length_m` is the CoM-to-rotor distance; each rotor sits at `(±L/√2, ±L/√2)`.
+**The index order, labels and spin directions are structural** — they must not be
+reordered. **The positions are vehicle data**, not interface: they live in
+`configs/base.yaml` under `dynamics.rotor_positions_body_m`, as `(x forward, y left)` in
+metres relative to the CoM, in the index order below. A new airframe is a config edit,
+not a source edit.
 
-| Index | Position (body, m) | Spin (from above, +z) | Label |
+For a symmetric X with CoM-to-rotor distance `L`, each rotor sits at `(±L/√2, ±L/√2)`;
+`envs.interface.nominal_x_positions(L)` returns exactly those four positions.
+
+| Index | Position for a symmetric X (body, m) | Spin (from above, +z) | Label |
 |---|---|---|---|
 | 0 | `(+L/√2, −L/√2)` | CW (`−1`) | front-right |
 | 1 | `(+L/√2, +L/√2)` | CCW (`+1`) | front-left |
@@ -78,15 +85,18 @@ inside the dynamics module; the policy interface does not change.
 
 | Item | Value |
 |---|---|
-| Physics rate | 240 Hz |
-| Control / policy rate | 60 Hz (exactly 4 physics steps per action, zero-order hold) |
-| Episode | 10 s = 600 control steps |
+| Physics rate | 240 Hz — `env.physics_hz` in `configs/base.yaml` |
+| Control / policy rate | 60 Hz — `env.control_hz`; must divide the physics rate exactly (4 steps per action, zero-order hold) |
+| Episode | 10 s = 600 control steps — `env.episode_length_s` |
 | Reward | Once per control step |
-| Failure time | Seconds from episode start, rounded to the control grid (`t · 60`) |
+| Failure time | Seconds from episode start; the environment rounds it to the control grid and stores the rounded value in the scenario |
 | Fault takes effect | At that control step; the command entering that step is already masked |
 
 60 Hz keeps the RL horizon manageable (600 steps per episode) while physics stays at 240 Hz.
 If either rate changes, the obs/action timing changes too — so please flag it before changing.
+
+The rates are read from the config and passed down; nothing caches them as a module
+constant, so editing `control_hz` cannot leave the fault module running at the old rate.
 
 ---
 
@@ -233,8 +243,39 @@ the seed. Evaluation runs with no learning.
 
 ## 9. Config and repo
 
-* YAML, one file per run, no code. `configs/base.yaml` is the nominal config; curriculum
+The values split into three layers. Only the bottom two are meant to change often.
+
+| Layer | Examples | Where it lives | Changes |
+|---|---|---|---|
+| **Structural** | 4 rotors and their index/label/spin order, `[0,1]` action bounds, the 17-field observation, ENU/FLU, scalar-last quaternion | `envs/interface.py` | never — this is the interface |
+| **Vehicle data** | rotor positions, mass, inertia, `T_max`, κ, drag | `configs/base.yaml` → `dynamics` | whenever the CAD numbers change |
+| **Experiment** | reward weights, termination, reset jitter, observation scales, PPO hyper-parameters, curriculum | `configs/*.yaml` | every experiment |
+
+Run files **extend** `base.yaml` and override only what differs:
+
+```yaml
+# configs/my_run.yaml
+extends: base.yaml
+dynamics:
+  mass_kg: 0.5
+```
+
+The merge is recursive for mappings. Load configs with `envs.config.load_config`, never
+with `yaml.safe_load` — the latter returns the child file alone and silently drops every
+inherited value. Two helpers:
+
+```bash
+# show the fully merged config and its digest
+python -m train.train_ppo --config configs/my_run.yaml --print-config
+```
+
+* `configs/base.yaml` is the nominal config and the thing to freeze at Gate 0; curriculum
   stages get `curriculum_stage{1,2,3}.yaml` later.
+* `dynamics` values that are still `null` mean "not agreed yet". Training refuses to start
+  until they are filled in, and `envs/stub_dynamics.py` names the owner in the error.
+* Every run stores the **resolved** config and its `config_sha256` in `meta.json`, so a
+  result can always be traced back to the exact parameters that produced it — which
+  matters once values change often.
 * Repo layout is the one already created: `configs/`, `src/dynamics/`, `src/faults/`,
   `envs/`, `train/`, `eval/`, `tests/`, `results/`.
 * One `main` branch; checkpoints and raw logs stay out of git.
@@ -247,7 +288,8 @@ the seed. Evaluation runs with no learning.
 1. ENU/FLU and scalar-last quaternion — OK?
 2. Rotor numbering/spin in the diagram — match your model?
 3. Physics 240 Hz / control 60 Hz — OK?
-4. Send mass, inertia, arm length, `T_max`, κ, motor lag. Using gym-pybullet-drones?
+4. Send rotor positions, mass, inertia, `T_max`, κ, motor lag — straight from the CAD mass
+   properties. Using gym-pybullet-drones?
 
 **Joe**
 1. `Scenario` fields and `sample_scenario()` — OK?

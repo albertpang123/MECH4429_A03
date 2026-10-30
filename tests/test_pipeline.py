@@ -5,17 +5,17 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 
 pytest.importorskip("stable_baselines3")
 pytest.importorskip("gymnasium")
 
 from stable_baselines3 import PPO
 
+from envs.config import load_config
 from envs.quadrotor_env import QuadrotorEnv
 
 ROOT = Path(__file__).resolve().parents[1]
-CONFIG = yaml.safe_load((ROOT / "configs" / "g3_hover.yaml").read_text(encoding="utf-8"))
+CONFIG = load_config(ROOT / "configs" / "g3_hover.yaml")
 
 
 def test_train_save_reload_predict(tmp_path):
