@@ -41,7 +41,8 @@ envs/
   stub_dynamics.py  G1 placeholder: 6-DOF rigid body, NumPy
   stub_faults.py    G2 placeholder: masks one rotor after failure_time_s
 train/train_ppo.py  PPO training, checkpoint + metadata + CSV logs
-eval/               deterministic evaluation, metrics, plots
+eval/               deterministic evaluation, metrics, plots, 3D replay
+run_replay.py       click-to-run launcher for the 3D replay (no arguments needed)
 tests/              interface, stub physics, train/save/reload
 docs/               INTERFACE.md (G0), G3.md (pipeline + results), rotor_layout.svg
 src/dynamics/       Andy: replace stub_dynamics.py
@@ -89,10 +90,49 @@ env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
 # evaluate a saved policy — no learning
 env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
   python -m eval.evaluate --checkpoint checkpoints/g3_stub_hover/model.zip
+
+# watch one of those episodes in 3D (needs pybullet, see below)
+env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
+  python -m eval.replay --checkpoint checkpoints/g3_stub_hover/model.zip --episode 0
 ```
 
 Overrides: `--timesteps`, `--n-envs`, `--name`, `--device` for training;
 `--episodes`, `--seed-start`, `--out` for evaluation.
+
+### 3D replay (optional)
+
+**Easiest: open [`run_replay.py`](run_replay.py) and press ▶ Run.** It takes no arguments,
+plays episode 0 of `g3_stub_hover`, re-executes itself with the `uav-g3` interpreter if the one
+the editor picked is missing packages, and writes `replay.gif` instead of failing when no window
+can be opened. `.vscode/settings.json` pins the interpreter and clears the ROS `PYTHONPATH`
+entry; `.vscode/` is gitignored, so that file stays local.
+
+`eval/replay.py` draws one evaluation episode in PyBullet. PyBullet is **display only** — the
+trajectory comes from the environment's own dynamics, so a replay cannot change any number in
+`eval.json`. Episode `n` uses the evaluator's seed (`seed_start + n`), so `--episode 0` is the
+episode in [results/g3_stub_hover/eval_trajectory.png](results/g3_stub_hover/eval_trajectory.png).
+
+```bash
+pip install pybullet==3.2.7     # one extra dependency, not needed for training
+```
+
+In the window: **Ctrl + left-drag** orbits (a plain drag is object picking in PyBullet's
+ExampleBrowser, and picking is switched off here so it does nothing), scroll zooms, space pauses,
+q quits. When the episode ends the window holds the last frame until you press q, so a 10 s
+replay does not look like a crash. The model is generated from
+`dynamics.rotor_positions_body_m`, so its rotor layout is whatever the config says — there is no
+second copy of the airframe to keep in sync. The failed rotor turns orange at the failure step.
+The rotor discs spin cosmetically (the rate is not a physical quantity).
+
+`--record out.gif` writes a ~1 MB GIF instead of opening a window, for people without PyBullet.
+It takes about 1m45s: offscreen rendering costs ~0.45 s a frame here (the offscreen renderer falls
+back to software rasterisation), and only the frames the GIF keeps are rendered. Rendering happens
+offscreen, so the file is the same on any machine. Committed example:
+[results/g3_stub_hover/replay_seed100000.gif](results/g3_stub_hover/replay_seed100000.gif).
+
+The current checkpoint was trained with `faults.mode: nominal`, so nothing fails in it — the
+failure visuals (`faults.mode: fixed` or `random`) need a checkpoint trained under faults, which
+is G4.
 
 ### Changing parameters
 

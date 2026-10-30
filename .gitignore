@@ -35,3 +35,6 @@ checkpoints/
 *.bullet
 video/
 *.mp4
+# run_replay.py's no-display fallback. GIFs under results/ are committed on purpose.
+/replay.gif
+/replay_seed*.gif
