@@ -1,0 +1,7 @@
+{
+  "run_name": "refactor_smoke",
+  "checkpoint": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/refactor_smoke/model.zip",
+  "meta": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/refactor_smoke/meta.json",
+  "total_timesteps": 8192,
+  "results": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/results/refactor_smoke"
+}
