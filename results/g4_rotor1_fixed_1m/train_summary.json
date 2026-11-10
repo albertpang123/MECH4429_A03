@@ -1,0 +1,7 @@
+{
+  "run_name": "g4_rotor1_fixed_1m",
+  "checkpoint": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g4_rotor1_fixed_1m/model.zip",
+  "meta": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/checkpoints/g4_rotor1_fixed_1m/meta.json",
+  "total_timesteps": 1007616,
+  "results": "/media/albertpang/D/deeplearning/UAV_Project/MECH4429/MECH4429_quadrotor_position_hold/results/g4_rotor1_fixed_1m"
+}

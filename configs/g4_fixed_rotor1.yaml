@@ -1,0 +1,29 @@
+# Gate 4, first step: ONE KNOWN FAULT, every episode.
+#
+# Rotor 1 (front-left) stops completely at 2.0 s. Same episode every time, so
+# what the policy learns is a single, interpretable response: how the three
+# surviving rotors are re-allocated. The supervisor's question -- "rotor 1
+# stops, how should the others change?" -- is answered by
+# `python -m eval.fault_response --checkpoint <run>` on this checkpoint.
+#
+# Deliberately NOT randomised: rotor_id and failure_time_s are fixed. Randomising
+# them (faults.mode: random) is the curriculum step after this one, because a
+# policy trained on one fault tells us the response is learnable at all before
+# we ask it to generalise.
+#
+# Everything else is identical to g3_hover.yaml, so the only differences from
+# the nominal baseline are the two lines under `faults`.
+
+extends: g3_hover.yaml
+
+status: g4-fixed-fault
+
+run:
+  name: g4_rotor1_fixed
+
+faults:
+  mode: fixed
+  fixed:
+    rotor_id: 1            # front-left; R0 FR, R1 FL, R2 RL, R3 RR
+    failure_time_s: 2.0    # 8 s of the 10 s episode left to recover
+    effectiveness: 0.0     # complete loss
