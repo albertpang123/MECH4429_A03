@@ -21,16 +21,20 @@ no ``python`` command at all outside a conda shell, which is why
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 REEXEC_MARKER = "RUN_REPLAY_REEXECUTED"
+_WINDOWS = os.name == "nt"
 
 #: Interpreters to try, in order, when the current one is missing packages.
 INTERPRETER_CANDIDATES = (
     os.environ.get("UAV_PYTHON"),
-    str(Path.home() / "miniconda3" / "envs" / "uav-g3" / "bin" / "python"),
+    # conda puts the environment here on both platforms, with a different tail.
+    str(Path.home() / "miniconda3" / "envs" / "uav-g3"
+        / ("python.exe" if _WINDOWS else "bin/python")),
     "/home/albertpang/miniconda3/envs/uav-g3/bin/python",
 )
 
@@ -52,8 +56,13 @@ def _missing_packages() -> list[str]:
             if importlib.util.find_spec(name) is None]
 
 
-def _re_exec(candidates) -> bool:
-    """Replace this process with one running a complete interpreter."""
+def _relaunch(candidates) -> int | None:
+    """Run this script again under a complete interpreter; return its exit code.
+
+    A subprocess rather than ``os.execv`` because ``execv`` means different things
+    on POSIX and Windows; this form behaves identically on both and keeps the exit
+    code, which is what the caller needs.
+    """
     current = Path(sys.executable).resolve()
     for candidate in candidates:
         if not candidate:
@@ -64,10 +73,13 @@ def _re_exec(candidates) -> bool:
         print(f"[run_replay] {Path(sys.executable).name} is missing packages; "
               f"switching to {interpreter}")
         sys.stdout.flush()
-        os.environ[REEXEC_MARKER] = "1"
-        os.execv(str(interpreter), [str(interpreter), str(Path(__file__).resolve()),
-                                    *sys.argv[1:]])
-    return False
+        env = os.environ.copy()
+        env[REEXEC_MARKER] = "1"
+        env.pop("PYTHONPATH", None)      # Linux-only hazard, harmless on Windows
+        return subprocess.run(
+            [str(interpreter), str(Path(__file__).resolve()), *sys.argv[1:]], env=env
+        ).returncode
+    return None
 
 
 def _default_checkpoint() -> Path:
@@ -103,15 +115,17 @@ def main() -> int:
 
     missing = _missing_packages()
     if missing:
-        if not os.environ.get(REEXEC_MARKER) and _re_exec(INTERPRETER_CANDIDATES):
-            return 1  # unreachable: os.execv replaces the process
+        if not os.environ.get(REEXEC_MARKER):
+            code = _relaunch(INTERPRETER_CANDIDATES)
+            if code is not None:
+                return code
         raise SystemExit(
             "This interpreter is missing: " + ", ".join(missing) + "\n"
             f"  interpreter: {sys.executable}\n\n"
             "Run with the project environment instead:\n"
-            "  /home/albertpang/miniconda3/envs/uav-g3/bin/python run_replay.py\n"
+            "  <conda envs>/uav-g3/bin/python run_replay.py   (Windows: python.exe)\n"
             "In VS Code: click the Python version in the bottom-right corner and\n"
-            "pick the uav-g3 interpreter."
+            "pick the uav-g3 interpreter, or set UAV_PYTHON to its full path."
         )
 
     sys.path.insert(0, str(ROOT))

@@ -32,8 +32,29 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from envs.config import config_hash, load_config, validate_structure  # noqa: E402
+from envs.dynamics_factory import backend_name  # noqa: E402
 from envs.quadrotor_env import QuadrotorEnv  # noqa: E402
 from eval.plotting import plot_learning_curve  # noqa: E402
+
+
+def check_parallel_backend(config, n_envs: int) -> None:
+    """Reject pybullet + SubprocVecEnv before any run directory is created.
+
+    A PyBullet physics client belongs to exactly one process. With SubprocVecEnv
+    the workers either inherit the parent's DIRECT connection (fork) or receive a
+    client id that does not exist in the child (spawn, which is what Windows
+    uses). Neither raises -- the rollout is simply wrong -- so this has to be
+    caught here rather than discovered later by comparing numbers.
+    """
+    if backend_name(config) == "pybullet" and n_envs > 1:
+        raise SystemExit(
+            f"dynamics.backend is 'pybullet' but n_envs={n_envs}.\n"
+            "A PyBullet client belongs to one process: SubprocVecEnv workers either\n"
+            "share the parent's DIRECT connection (fork) or get a client id that does\n"
+            "not exist in the child (spawn, used on Windows). The rollout would be\n"
+            "wrong without raising.\n"
+            "Use --n-envs 1, or keep dynamics.backend: numpy for parallel training."
+        )
 
 
 def unique_run_dir(base: Path, name: str) -> Path:
@@ -91,6 +112,10 @@ def main() -> int:
     n_envs = int(config["run"]["n_envs"])
     total_timesteps = int(config["run"]["total_timesteps"])
     device = str(config["run"]["device"])
+
+    # Before anything is written to disk: an unsupported combination must not
+    # leave behind a half-populated run directory.
+    check_parallel_backend(config, n_envs)
 
     set_random_seed(seed, using_cuda=device.startswith("cuda"))
     torch.set_num_threads(1)

@@ -250,6 +250,7 @@ The values split into three layers. Only the bottom two are meant to change ofte
 | **Structural** | 4 rotors and their index/label/spin order, `[0,1]` action bounds, the 17-field observation, ENU/FLU, scalar-last quaternion | `envs/interface.py` | never — this is the interface |
 | **Vehicle data** | rotor positions, mass, inertia, `T_max`, κ, drag | `configs/base.yaml` → `dynamics` | whenever the CAD numbers change |
 | **Experiment** | reward weights, termination, reset jitter, observation scales, PPO hyper-parameters, curriculum | `configs/*.yaml` | every experiment |
+| **Backend** | `dynamics.backend`: `numpy` (default) or `pybullet` | `configs/base.yaml` → `dynamics.backend` | when comparing integrators; see below |
 
 Run files **extend** `base.yaml` and override only what differs:
 
@@ -276,6 +277,12 @@ python -m train.train_ppo --config configs/my_run.yaml --print-config
 * Every run stores the **resolved** config and its `config_sha256` in `meta.json`, so a
   result can always be traced back to the exact parameters that produced it — which
   matters once values change often.
+* **Two implementations, one interface.** `envs/dynamics_factory.py` builds the object for
+  `dynamics.backend`. Both `StubDynamics` and `PyBulletDynamics` answer the same four calls
+  (`reset`, `step`, `applied_thrusts`, `hover_command`), so nothing above the dynamics layer
+  can tell which one is running. The `pybullet` backend reproduces the stub numerically
+  (≤ 0.041 mm over 4 s under sustained torque) and adds ground contact; select it per run,
+  never by editing the env.
 * Repo layout is the one already created: `configs/`, `src/dynamics/`, `src/faults/`,
   `envs/`, `train/`, `eval/`, `tests/`, `results/`.
 * One `main` branch; checkpoints and raw logs stay out of git.

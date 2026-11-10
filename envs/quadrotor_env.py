@@ -12,7 +12,7 @@ training code must not feed ``info`` to the policy.
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Optional
+from typing import Any, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -31,14 +31,14 @@ from envs.interface import (
     quantise_to_control_grid,
 )
 from envs.quat import quat_from_rpy
-from envs.stub_dynamics import StubDynamics, StubParams
+from envs.dynamics_factory import make_dynamics
 from envs.stub_faults import StubFaultInjector
 
 
 class QuadrotorEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, config: dict, dynamics: Optional[StubDynamics] = None) -> None:
+    def __init__(self, config: dict, dynamics: Optional[Any] = None) -> None:
         super().__init__()
         validate_structure(config)
         self.config = config
@@ -58,9 +58,9 @@ class QuadrotorEnv(gym.Env):
         if self.target_position.shape != (3,):
             raise ValueError("env.target_position must have shape (3,)")
 
-        self.dynamics = dynamics if dynamics is not None else StubDynamics(
-            StubParams.from_config(config)
-        )
+        # Backend choice lives in ``dynamics.backend`` (numpy | pybullet); the
+        # env never looks at which one it got. See envs/dynamics_factory.py.
+        self.dynamics = dynamics if dynamics is not None else make_dynamics(config)
 
         obs_cfg = config["observation"]
         self.history_len = int(obs_cfg["history_len"])
@@ -276,4 +276,8 @@ class QuadrotorEnv(gym.Env):
         return None
 
     def close(self) -> None:
-        return None
+        # Only the pybullet backend holds an engine client; StubDynamics has no
+        # close(), so this is a no-op for the default path.
+        close = getattr(self.dynamics, "close", None)
+        if callable(close):
+            close()

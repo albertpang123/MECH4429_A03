@@ -1,11 +1,17 @@
 # MECH4429 Project A03 — Quadrotor Position Hold After Single-Rotor Failure
 
+**English** · [简体中文](README.zh-CN.md)
+
 A reinforcement-learning controller that keeps a quadrotor near a set point after one rotor
 fails, trained in simulation.
 
 **Current state: Gate 3 — the RL pipeline runs end to end on stub dynamics.** The physics and
 fault modules are placeholders written so the learning side could be built before Gates 1–2
 were ready. **No number in this repo is a vehicle result.** See [docs/G3.md](docs/G3.md).
+
+There are two interchangeable dynamics backends behind one interface — the NumPy stub (default)
+and the PyBullet engine. They agree to 0.041 mm over 4 s of flight; see
+[Two dynamics backends](#two-dynamics-backends).
 
 ## Team and ownership
 
@@ -25,23 +31,29 @@ the code we compare against. Everyone else should be able to reproduce the same 
 | G0 | Interface: frames, rates, observation, action, reward, seeds | **Proposal circulating** — [docs/INTERFACE.md](docs/INTERFACE.md), still changeable |
 | G1 | 6-DOF dynamics | Not started in this repo (`src/dynamics/` empty) |
 | G2 | Single-rotor failure model | Not started in this repo (`src/faults/` empty) |
-| G3 | RL pipeline, stub dynamics | **Done** — train → save → reload → evaluate works |
+| G3 | RL pipeline, stub dynamics | **Done** — train → save → reload → evaluate works; 61 tests; two interchangeable dynamics backends |
 | G4 | Curriculum over failure time / rotor | Not started |
 | G5 | Final evaluation and report | Not started |
 
 ## Repository layout
 
 ```
+environment.yml     one conda command for Linux and Windows, versions pinned
 configs/            base.yaml (G0 spec) + one YAML per run, each extending base
 envs/
   interface.py      shared types, observation layout, structural rotor order  <- start here
   config.py         config loading, inheritance, digest, validation
   quat.py           quaternion helpers
   quadrotor_env.py  Gymnasium task (observation, action, reward, termination)
-  stub_dynamics.py  G1 placeholder: 6-DOF rigid body, NumPy
+  stub_dynamics.py  G1 placeholder: 6-DOF rigid body, NumPy (default backend)
+  pybullet_dynamics.py  the same model on the PyBullet engine, + ground contact
+  dynamics_factory.py   picks a backend from dynamics.backend: numpy | pybullet
   stub_faults.py    G2 placeholder: masks one rotor after failure_time_s
 train/train_ppo.py  PPO training, checkpoint + metadata + CSV logs
 eval/               deterministic evaluation, metrics, plots, 3D replay
+eval/fault_response.py  what the policy commands after a known rotor stops
+tools/platform_check.py versions + both backends + cross-machine determinism digest
+run.py              click-to-run menu: train / evaluate / replay / tests / doctor / config
 run_replay.py       click-to-run launcher for the 3D replay (no arguments needed)
 tests/              interface, stub physics, train/save/reload
 docs/               INTERFACE.md (G0), G3.md (pipeline + results), rotor_layout.svg
@@ -56,6 +68,14 @@ checkpoints/        weights (not in git)
 Ubuntu 22.04, Python 3.10, conda env named `uav-g3`:
 
 ```bash
+conda env create -f environment.yml     # one command, Linux or Windows
+conda activate uav-g3
+```
+
+`environment.yml` pins exactly the versions every reported number was produced with. If you
+prefer to build it by hand instead:
+
+```bash
 conda create -n uav-g3 python=3.10 -y
 conda activate uav-g3
 pip install numpy==1.26.4 gymnasium==0.29.1 stable-baselines3==2.2.1 \
@@ -63,7 +83,24 @@ pip install numpy==1.26.4 gymnasium==0.29.1 stable-baselines3==2.2.1 \
 # CPU-only is fine for everything in this repo. torch comes with stable-baselines3.
 ```
 
+After that, run `python tools/platform_check.py` (or menu item `doctor`). It prints the versions,
+exercises both dynamics backends and emits a **determinism digest** — a fixed 120-step rollout.
+Two machines that print the same digest produce the same training data; that is how the Ubuntu and
+Windows copies are checked against each other.
+
 All commands below run **from the repository root**.
+
+### Don't want to type commands? `run.py`
+
+Open `run.py` and press **Run** (▶ top-right in VS Code), or run `python3 run.py`.
+It shows a menu — train, evaluate, replay, tests, backend comparison, print
+config — and starts whatever you pick. It needs no arguments and no activated
+environment: it uses only the standard library itself, finds the `uav-g3`
+interpreter, drops `PYTHONPATH` and sets the CPU flag for you. `--list` prints
+the entries, `--run <key>` runs one directly.
+
+`run_replay.py` is the older single-purpose launcher for just the 3D replay;
+the menu calls it, so both stay in sync.
 
 ### Three things that will bite you
 
@@ -134,6 +171,46 @@ The current checkpoint was trained with `faults.mode: nominal`, so nothing fails
 failure visuals (`faults.mode: fixed` or `random`) need a checkpoint trained under faults, which
 is G4.
 
+### Two dynamics backends
+
+`dynamics.backend` in the config picks the integrator. Everything above it — observation, reward,
+fault injection, training, evaluation — is untouched, which is the point: the env only ever calls
+`reset`, `step`, `applied_thrusts` and `hover_command`.
+
+| `dynamics.backend` | Class | What it is |
+|---|---|---|
+| `numpy` (default) | `envs/stub_dynamics.py` | hand-written 6-DOF semi-implicit Euler |
+| `pybullet` | `envs/pybullet_dynamics.py` | the same model on the PyBullet engine, plus a ground plane |
+
+`envs/dynamics_factory.py` builds whichever the config asks for;
+[configs/g3_pybullet.yaml](configs/g3_pybullet.yaml) is `g3_hover.yaml` with only that line changed,
+so a comparison between the two isolates the integrator.
+
+```bash
+# train on the engine backend (same 200k steps, same everything else)
+env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
+  python -m train.train_ppo --config configs/g3_pybullet.yaml
+```
+
+Verified by [tests/test_pybullet_backend.py](tests/test_pybullet_backend.py) (15 tests): with the
+plane switched off the two backends agree to **0.041 mm over 4 s** while airborne — including
+cases that fly 35 m and tumble past 100° — and hover is bit-for-bit identical. With the plane on
+they differ exactly where they should: the stub has no floor and falls through z = 0, the engine
+lands. That is the only intended difference.
+
+Two things worth remembering:
+
+* **PyBullet's `linearDamping` is not our drag coefficient.** Ours is a force per unit speed
+  (N/(m/s)); Bullet's is a decay rate (1/s). Mapping one onto the other silently changes the
+  model — it showed up as a 15 m divergence in 4 s. The engine's damping is therefore set to zero
+  and the drag terms are applied as explicit forces, exactly as the stub does.
+* **The engine is faster, not slower.** Through `QuadrotorEnv`: 3078 steps/s (0.32 ms per control
+  step) versus 1755 steps/s (0.57 ms) for the NumPy stub.
+
+Ground contact is the feature, not an accident: `termination.use_ground_contact` in `base.yaml` is
+still an open G0 question, so the pybullet backend simply has a floor and the numpy backend does
+not.
+
 ### Changing parameters
 
 Every tunable value lives in `configs/base.yaml`: vehicle parameters, reward weights,
@@ -201,6 +278,9 @@ Nominal hover, `configs/g3_hover.yaml`, 200,704 steps, evaluated on 20 unused se
 about 0.17 m in z. The policy learned to *survive*, not to hold tightly, and training had not
 converged at the 200k cutoff. Numbers and interpretation: [docs/G3.md](docs/G3.md).
 
+The default backend is still `numpy`, so adding the PyBullet backend changed none of these
+numbers — the original checkpoint re-evaluates to the same figures.
+
 ## What stays out of git
 
 `checkpoints/`, `*.zip`, `*.pt`, `runs/`, `wandb/`, `__pycache__/`, `.pytest_cache/`.
@@ -218,6 +298,8 @@ These are deliberate; they go away when G1/G2 land, but do not build on them:
   without warning. Compare against `nominal_x_positions()` if that matters.
 * Action → thrust is assumed **linear** (`f = T_max · u`). If the real mapping becomes
   quadratic in RPM, existing checkpoints stop meaning the same thing.
+* The pybullet backend's ground contact is not wired into the termination condition yet — a
+  crash is still decided by `termination.crash_z`.
 
 ## Working with this repo
 

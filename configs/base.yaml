@@ -59,6 +59,12 @@ termination:
   use_ground_contact: false  # TBD: Andy/Joe decide whether PyBullet contacts are used
 
 dynamics:
+  # Which integrator runs underneath the shared step()/reset() interface.
+  # "numpy"    = StubDynamics, the hand-written 6-DOF model (default, unchanged).
+  # "pybullet" = the same model on the PyBullet engine (envs/pybullet_dynamics.py),
+  #              which additionally gives real ground contact.
+  # Adding a choice here changes nothing for runs that do not ask for it.
+  backend: numpy
   # Owned by Andy (G1). Null means "not agreed yet"; a run config must fill each
   # of these in before training (StubParams.from_config names the owner on error).
   # Rotor positions are vehicle data, not interface: put the CAD measurement here

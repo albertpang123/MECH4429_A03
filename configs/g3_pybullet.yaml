@@ -1,0 +1,22 @@
+# Same task and same vehicle data as g3_hover.yaml, but the dynamics run on the
+# PyBullet engine instead of the NumPy stub. Nothing else changes: same
+# observation, reward, fault injector and PPO settings, so a comparison between
+# the two configs isolates the integrator and the ground contact.
+#
+# Usage:
+#   python -m train.train_ppo --config configs/g3_pybullet.yaml --timesteps 4096 --name smoke_pybullet
+#
+# The two backends agree to 0.041 mm over 4 s while airborne (see
+# tests/test_pybullet_backend.py). While training, contact with the ground plane
+# produces a crash response the NumPy backend cannot model -- that is the point
+# of this config, and the reason its curve is not expected to match g3_hover.
+
+extends: g3_hover.yaml
+
+status: g3-smoke-pybullet
+
+run:
+  name: g3_pybullet_hover
+
+dynamics:
+  backend: pybullet

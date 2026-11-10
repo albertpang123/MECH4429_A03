@@ -1,0 +1,48 @@
+# One environment for Linux and Windows.
+#
+#   conda env create -f environment.yml
+#   conda activate uav-g3
+#
+# Versions are pinned to the ones every reported number was produced with. If you
+# change a pin, re-run `python run.py --run test_backend` and `pytest tests -q`
+# and say so in the pull request -- a silent version bump is how results stop
+# being reproducible.
+#
+# pybullet is listed under pip because that is how it was installed on the
+# reference machine (built from source on Linux). On Windows, if pip has no
+# wheel for your Python, use the conda-forge package instead:
+#     conda install -c conda-forge pybullet=3.2.7
+# pybullet is only needed for the 3D replay and for `dynamics.backend: pybullet`;
+# training and the whole test suite except tests/test_pybullet_backend.py run
+# without it.
+#
+# Why torch is pinned instead of left to stable-baselines3
+# --------------------------------------------------------
+# SB3 2.2.1 declares `torch>=1.13`, so an unpinned install resolves to whatever
+# is newest. On Windows that is a CUDA 12 build of the latest torch, and from
+# torch 2.6 on, `torch.load` defaults to `weights_only=True`, which breaks how
+# SB3 <=2.4 restores a PPO policy from `model.zip`. The symptom is a
+# `WeightsUnpickler` error when evaluating a checkpoint -- not at install time,
+# which is why it is easy to hit only on the teammate who did a fresh install.
+# 2.0.1 is the version on the reference machine and can read every checkpoint in
+# this repository. It is the cu117 build on both platforms and runs fine on CPU;
+# the download is ~2.2 GB. If you want a small CPU-only install instead, use
+#     pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
+# and say so, because it changes the pinned set.
+name: uav-g3
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy=1.26.4
+  - pandas=2.0.3
+  - matplotlib=3.7.5
+  - pyyaml
+  - pytest=7.4.4
+  - pip
+  - pip:
+      - torch==2.0.1                 # see the note below -- do not let pip pick this
+      - gymnasium==0.29.1
+      - stable-baselines3==2.2.1
+      - pybullet==3.2.7

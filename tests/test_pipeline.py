@@ -56,3 +56,23 @@ def test_train_save_reload_predict(tmp_path):
     loaded = PPO.load(checkpoint, env=env, device="cpu")
     action_after, _ = loaded.predict(obs, deterministic=True)
     assert np.allclose(action_before, action_after, atol=1e-6)
+
+
+def test_pybullet_backend_rejects_parallel_envs():
+    """One PyBullet client per process: SubprocVecEnv cannot run it.
+
+    Without this guard the workers either share the parent's DIRECT connection
+    (fork) or get a client id that does not exist in the child (spawn, used on
+    Windows). Either way the rollout is wrong and nothing raises.
+    """
+    from train.train_ppo import check_parallel_backend
+
+    config = copy.deepcopy(CONFIG)
+    config["dynamics"]["backend"] = "pybullet"
+
+    check_parallel_backend(config, 1)  # single process is the supported path
+    with pytest.raises(SystemExit):
+        check_parallel_backend(config, 2)
+
+    config["dynamics"]["backend"] = "numpy"
+    check_parallel_backend(config, 4)  # the NumPy stub is picklable, so this is fine
