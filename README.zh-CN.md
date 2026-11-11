@@ -71,12 +71,29 @@ results/            值得留下的指标与图（进版本控制）
 checkpoints/        权重（不进版本控制）
 ```
 
-## 快速开始
+## 从 GitHub 下载后怎么跑起来
 
-Python 3.12，conda 环境名 `uav-g3`，Linux 和 Windows 用同一个文件：
+只需要 Git 和 conda，CPU 就够 —— 不需要 GPU，不需要 ROS，也不需要 C++ 编译器。
+
+**1. 装好前置工具**（每台机器一次）：[Git](https://git-scm.com/downloads) 和
+[Miniconda](https://docs.conda.io/en/latest/miniconda.html)（Anaconda 也行）。Windows 上在
+**Anaconda Prompt** 里运行下面的命令，或者先执行一次 `conda init powershell` 再重开终端；
+Ubuntu 上先执行一次 `conda init bash` 再重开 shell。环境加上内置模拟器大约占 2 GB 磁盘。
+
+**2. 克隆仓库。**
 
 ```bash
-conda env create -f environment.yml     # 一条命令，Linux / Windows 通用
+git clone https://github.com/albertpang123/MECH4429_A03.git
+cd MECH4429_A03
+```
+
+GitHub 上的仓库叫 `MECH4429_A03`；本地工作副本的文件夹名可能不同。下面所有命令都在
+**仓库根目录** 下运行。
+
+**3. 创建环境** —— Python 3.12，环境名 `uav-g3`，Linux 和 Windows 用同一个文件：
+
+```bash
+conda env create -f environment.yml     # 几分钟，约 1 GB 下载
 conda activate uav-g3
 ```
 
@@ -97,13 +114,62 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 `pip install pybullet` 在 Windows 上要先装 MSVC Build Tools 才能从源码编译。conda-forge 把它
 编号为 3.25，包本身是 pybullet 3.2.5。
 
-装完之后跑一次 `python tools/platform_check.py`（菜单里的 `doctor` 项）。它会打印版本、把三套
-实现各跑一遍，并输出一个**一致性指纹**——一段固定的 120 步 rollout。两台机器打出来的指纹
-相同，说明它们会产生同样的训练数据；Ubuntu 和 Windows 两份代码就是这样互相校验的。
+**4. 确认环境对上了。** 跑一次 `python tools/platform_check.py`（菜单里的 `doctor` 项）。它会
+打印版本、把三套实现各跑一遍，并输出一个**一致性指纹**——一段固定的 120 步 rollout。两台机器
+打出来的指纹相同，说明它们会产生同样的训练数据；Ubuntu 和 Windows 两份代码就是这样互相校验的。
 （指纹来自 legacy 的 NumPy 实现；2026-11-10 升级依赖后 numpy 从 1.26 到 2.5，和那之前的输出
 对不上是依赖变了，不是机器坏了。）
 
-下面所有命令都在 **仓库根目录** 下运行。
+**5. 跑测试。** 应该看到 `89 passed`，约 7 秒：
+
+```bash
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUDA_VISIBLE_DEVICES="" \
+  python -m pytest tests -q
+```
+
+`env -u PYTHONPATH` 只在同机装了 ROS 时才有必要（ROS 会往 `PYTHONPATH` 里塞 `python3.10`，
+遮住环境里的包）；Windows 上没装 ROS 的话，直接 `python -m pytest tests -q` 就行。这一步过了，
+说明装对了，后面的命令都能跑。
+
+**6. 训练第一个策略。** 先来个 4k 步的冒烟（约 10 秒），再跑正式的：
+
+```bash
+python -m train.train_ppo --config configs/g3_hover.yaml --timesteps 4096 --name first_run
+python -m train.train_ppo --config configs/g3_hover.yaml
+```
+
+第二条是 200,704 步——参考机器上约 3 分钟（4 个 env，约 1200 步/秒）；旧机器会慢一些。每次运行
+会留下 `checkpoints/<名字>/model.zip`、`meta.json`、`logs/`，以及 `results/<名字>/` 里的学习曲线
+和 `progress.csv`。
+
+**7. 评估和回放。**
+
+```bash
+python -m eval.evaluate --checkpoint checkpoints/first_run/model.zip --episodes 20
+python -m eval.replay   --checkpoint checkpoints/first_run/model.zip --episode 0   # 需要显示器
+```
+
+**权重不在仓库里。** `.gitignore` 排除了 `checkpoints/` 和 `*.zip`，所以你能在 `results/` 里看到
+的结果，其 checkpoint 并**没有**上传。后面示例里写 `checkpoints/g3_stub_hover/...` 的命令，只有
+你自己训练过（或者从别处拿到 checkpoint）之后才能跑——换成你自己的
+`checkpoints/<名字>/model.zip`。
+
+**8. 改参数、做对比。** `--set` 可以覆盖任意配置键，`train/sweep.py` 跑网格——见下面的
+[常用命令](#常用命令)。
+
+### 启动失败时看这里
+
+| 症状 | 原因 | 解决 |
+|---|---|---|
+| `conda: command not found` | 当前 shell 没初始化 conda | 用 **Anaconda Prompt**，或执行一次 `conda init bash` / `conda init powershell` 后重开 |
+| `ModuleNotFoundError: No module named 'torch'`（或 `gymnasium`） | 命令跑在别的解释器里 | `conda activate uav-g3`；用 `python -c "import sys; print(sys.executable)"` 确认路径 |
+| numpy/ROS 相关的 import 错误 | ROS 的 `python3.10` 路径进了 `PYTHONPATH` | `env -u PYTHONPATH ...`（Linux），或在 Windows 上清掉 `PYTHONPATH` |
+| `FileNotFoundError: checkpoints/...` | 权重不在 git 里 | 先训练一次（第 6 步） |
+| Windows 上 `pip install pybullet` 失败 | PyPI 没有 wheel | 用 `environment.yml`（conda-forge） |
+| `Fatal Python error: Aborted`，栈顶在 `numpy.linalg` | 两份 OpenMP 运行时（Windows） | 仓库里每个入口都会设 `KMP_DUPLICATE_LIB_OK=TRUE`；你自己写脚本时照做 |
+| `git clone` 报代理错误 | git 配置里有个失效的 `http.proxy` | `git config --global --unset http.proxy`，或 `git -c http.proxy= clone ...` |
+
+更细的环境坑见 [五个一定会坑到你的地方](#五个一定会坑到你的地方)。
 
 ### 不想敲命令？用 `run.py`
 
@@ -159,7 +225,7 @@ legacy 的 `--opengl2` 渲染器字就完整了，代价是没阴影、没地面
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUDA_VISIBLE_DEVICES="" \
   python -m pytest tests -q
 
-# 训练（200k 步，CPU 约 20 分钟：默认环境要真的步进引擎）
+# 训练（200k 步，参考机器约 3 分钟：默认环境要真的步进引擎）
 env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
   python -m train.train_ppo --config configs/g3_hover.yaml
 
@@ -348,10 +414,17 @@ env -u PYTHONPATH /home/albertpang/miniconda3/envs/uav-g3/bin/python \
 会照着构造——所以这些数字没有被迁移改掉。`gpd` 是另一台机器（0.027 kg、推重比 2.25），要在它上面
 得到可比的结果需要重新训练；旧数字不能平移过来。
 
+`gpd` 的第一批基线（2026-11-11，各 200,704 步、4 个 env）：名义悬停和"1 号桨在 2.0 s 停转"
+**都是 20/20 坠机**，平均每集 37–40 步（10 s 的一集只跑了约 0.6 s）。故障那次连触发都没有
+（评估里每集 `fault_active = False`），所以这两次还说明不了故障恢复——两个策略都还没学会悬停。
+数字见 [results/g3_nominal_gpd](results/g3_nominal_gpd/) 和
+[results/g4_rotor1_gpd](results/g4_rotor1_gpd/)。
+
 ## 不进版本控制的东西
 
-`checkpoints/`、`*.zip`、`*.pt`、`runs/`、`wandb/`、`__pycache__/`、`.pytest_cache/`。
-配置、指标（`results/*.json`、`results/*.csv`）和图片**要**进 —— 它们是我们比较各次运行的依据。
+`checkpoints/`、`*.zip`、`*.pt`、`runs/`、`wandb/`、`.scratch/`、`__pycache__/`、
+`.pytest_cache/`。配置、指标（`results/*.json`、`results/*.csv`）和图片**要**进 —— 它们是我们
+比较各次运行的依据。
 
 ## stub 的已知缺口
 

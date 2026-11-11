@@ -75,12 +75,31 @@ results/            metrics and figures that are worth keeping (in git)
 checkpoints/        weights (not in git)
 ```
 
-## Quick start
+## Run it from a fresh clone
 
-Python 3.12, conda env named `uav-g3`, same file on Linux and Windows:
+Only Git and a conda installation are needed. CPU is enough — no GPU, no ROS, and no C++
+compiler.
+
+**1. Install the prerequisites** (once per machine): [Git](https://git-scm.com/downloads) and
+[Miniconda](https://docs.conda.io/en/latest/miniconda.html) (Anaconda works too). On Windows,
+run the commands below in **Anaconda Prompt**, or run `conda init powershell` once and reopen
+the terminal. On Ubuntu run `conda init bash` once and reopen the shell. Budget about 2 GB of
+free disk for the environment and the vendored simulator.
+
+**2. Clone the repository.**
 
 ```bash
-conda env create -f environment.yml     # one command, Linux or Windows
+git clone https://github.com/albertpang123/MECH4429_A03.git
+cd MECH4429_A03
+```
+
+The GitHub repository is called `MECH4429_A03`; a working copy may sit in a differently named
+folder. Everything below runs **from the repository root**.
+
+**3. Create the environment** — Python 3.12, conda env `uav-g3`, one file for Linux and Windows:
+
+```bash
+conda env create -f environment.yml     # a few minutes, about 1 GB of downloads
 conda activate uav-g3
 ```
 
@@ -102,12 +121,65 @@ pip install --extra-index-url https://download.pytorch.org/whl/cpu \
 version, so `pip install pybullet` fails on Windows without MSVC Build Tools. conda-forge calls
 it 3.25; the package is pybullet 3.2.5.
 
-After that, run `python tools/platform_check.py` (or menu item `doctor`). It prints the versions,
-exercises all three implementations and emits a **determinism digest** — a fixed 120-step rollout.
-Two machines that print the same digest produce the same training data; that is how the Ubuntu and
-Windows copies are checked against each other.
+**4. Check that the environment is the right one.** Run `python tools/platform_check.py` (or
+menu item `doctor`). It prints the versions, exercises all three implementations and emits a
+**determinism digest** — a fixed 120-step rollout. Two machines that print the same digest
+produce the same training data; that is how the Ubuntu and Windows copies are checked against
+each other.
 
-All commands below run **from the repository root**.
+**5. Run the tests.** Expect `89 passed` in about 7 s:
+
+```bash
+env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUDA_VISIBLE_DEVICES="" \
+  python -m pytest tests -q
+```
+
+`env -u PYTHONPATH` only matters when ROS shares the machine (it exports a `python3.10` path
+that shadows the env); on Windows without ROS, plain `python -m pytest tests -q` is enough.
+If this passes, the install is correct and the rest of the commands will work.
+
+**6. Train your first policy.** A 4k-step smoke first (about 10 s), then the real run:
+
+```bash
+python -m train.train_ppo --config configs/g3_hover.yaml --timesteps 4096 --name first_run
+python -m train.train_ppo --config configs/g3_hover.yaml
+```
+
+The second command is 200,704 steps — about 3 min on the reference laptop (~1200 steps/s with
+4 envs); an older machine takes longer. Each run leaves `checkpoints/<name>/model.zip`,
+`meta.json`, `logs/`, and a copy of the learning curve plus `progress.csv` in
+`results/<name>/`.
+
+**7. Evaluate and watch it.**
+
+```bash
+python -m eval.evaluate --checkpoint checkpoints/first_run/model.zip --episodes 20
+python -m eval.replay   --checkpoint checkpoints/first_run/model.zip --episode 0   # needs a display
+```
+
+**Weights are not in the repository.** `.gitignore` excludes `checkpoints/` and `*.zip`, so
+the `results/` folders you can browse were produced by runs whose checkpoints are *not*
+shipped. The evaluation examples further down that point at `checkpoints/g3_stub_hover/...`
+only work after you have trained a run yourself (or received a checkpoint some other way);
+use your own `checkpoints/<name>/model.zip`.
+
+**8. Change parameters and compare runs.** `--set` overrides any config key for a single run,
+and `train/sweep.py` runs a grid — see [Commands](#commands) below.
+
+### If it does not start
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `conda: command not found` | conda not initialised in this shell | use **Anaconda Prompt**, or `conda init bash` / `conda init powershell` once and reopen |
+| `ModuleNotFoundError: No module named 'torch'` (or `gymnasium`) | commands run in another interpreter | `conda activate uav-g3`; confirm with `python -c "import sys; print(sys.executable)"` |
+| numpy/ROS import errors | ROS's `python3.10` path on `PYTHONPATH` | `env -u PYTHONPATH ...` (Linux) or clear `PYTHONPATH` (Windows) |
+| `FileNotFoundError: checkpoints/...` | weights are not in git | train a run first (step 6) |
+| `pip install pybullet` fails on Windows | no PyPI wheel exists | use `environment.yml` (conda-forge) |
+| `Fatal Python error: Aborted` in `numpy.linalg` | two OpenMP runtimes (Windows) | every entry point here sets `KMP_DUPLICATE_LIB_OK=TRUE`; do the same in your own scripts |
+| `git clone` fails with a proxy error | a stale `http.proxy` in the git config | `git config --global --unset http.proxy`, or `git -c http.proxy= clone ...` |
+
+Deeper explanations of the environment traps are in
+[Five things that will bite you](#five-things-that-will-bite-you).
 
 ### Don't want to type commands? `run.py`
 
@@ -176,7 +248,7 @@ the menu calls it, so both stay in sync.
 env -u PYTHONPATH PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 CUDA_VISIBLE_DEVICES="" \
   python -m pytest tests -q
 
-# train (200k steps, ~20 min on CPU: the default env steps the engine)
+# train (200k steps, ~3 min on the reference machine: the default env steps the engine)
 env -u PYTHONPATH CUDA_VISIBLE_DEVICES="" \
   python -m train.train_ppo --config configs/g3_hover.yaml
 
@@ -388,11 +460,18 @@ config it was trained with in `meta.json`, and `make_env` builds exactly that �
 checkpoint re-evaluates to the same figures. `gpd` is a different machine (0.027 kg, thrust-to-
 weight 2.25); comparable results on it need a fresh training run, not a translation.
 
+First `gpd` baselines (2026-11-11, 200,704 steps each, 4 envs): nominal hover and rotor 1
+failing at 2.0 s both crash **20/20**, at a mean episode length of 37–40 steps (≈0.6 s of a 10 s
+episode). In the fault run the failure never even triggers (`fault_active = False` in every
+evaluation episode), so neither run says anything about fault recovery yet — both policies are
+still short of their first hover. Numbers: [results/g3_nominal_gpd](results/g3_nominal_gpd/)
+and [results/g4_rotor1_gpd](results/g4_rotor1_gpd/).
+
 ## What stays out of git
 
-`checkpoints/`, `*.zip`, `*.pt`, `runs/`, `wandb/`, `__pycache__/`, `.pytest_cache/`.
-Configs, metrics (`results/*.json`, `results/*.csv`) and figures **do** go in — they are how we
-compare runs.
+`checkpoints/`, `*.zip`, `*.pt`, `runs/`, `wandb/`, `.scratch/`, `__pycache__/`,
+`.pytest_cache/`. Configs, metrics (`results/*.json`, `results/*.csv`) and figures **do** go
+in — they are how we compare runs.
 
 ## Known gaps in the stubs
 
