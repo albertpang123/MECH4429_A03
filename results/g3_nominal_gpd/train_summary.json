@@ -1,0 +1,7 @@
+{
+  "run_name": "g3_nominal_gpd",
+  "checkpoint": "D:\\deeplearning\\UAV_Project\\MECH4429\\MECH4429_quadrotor_position_hold\\checkpoints\\g3_nominal_gpd\\model.zip",
+  "meta": "D:\\deeplearning\\UAV_Project\\MECH4429\\MECH4429_quadrotor_position_hold\\checkpoints\\g3_nominal_gpd\\meta.json",
+  "total_timesteps": 200704,
+  "results": "D:\\deeplearning\\UAV_Project\\MECH4429\\MECH4429_quadrotor_position_hold\\results\\g3_nominal_gpd"
+}

@@ -272,6 +272,28 @@ class QuadrotorEnv(gym.Env):
     def scenario(self) -> Scenario:
         return self._scenario
 
+    #: Vehicle description, mirrored by ``GPDQuadrotorEnv`` so reporting tools do
+    #: not have to know which implementation produced an episode. Here it is read
+    #: through the dynamics object; there it comes from gpd's URDF.
+    @property
+    def hover_action(self) -> float:
+        return float(np.mean(self.dynamics.hover_command))
+
+    @property
+    def mass_kg(self) -> float:
+        return float(self.dynamics.params.mass_kg)
+
+    @property
+    def thrust_max_per_rotor_n(self) -> float:
+        return float(self.dynamics.params.thrust_max_per_rotor_n)
+
+    def applied_thrusts(self, u_applied) -> np.ndarray:
+        return np.asarray(self.dynamics.applied_thrusts(u_applied), dtype=np.float64)
+
+    @property
+    def rotor_positions_body_m(self) -> np.ndarray:
+        return np.asarray(self.dynamics.params.rotor_positions_body_m, dtype=np.float64)
+
     def render(self):
         return None
 

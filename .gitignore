@@ -20,6 +20,7 @@ Thumbs.db
 
 # ---- Training artefacts ----
 # Configs and metrics go in git; weights and raw logs do not.
+.scratch/
 runs/
 wandb/
 checkpoints/

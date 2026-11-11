@@ -3,6 +3,11 @@
 
 Example:
     python -m train.train_ppo --config configs/g3_hover.yaml
+    python -m train.train_ppo --config configs/g3_hover.yaml \
+        --set ppo.n_epochs=5 --set ppo.learning_rate=1.0e-4 --seed 3
+
+For a grid of runs, use ``python -m train.sweep`` rather than a shell loop: it
+names the runs, records the plan, and collects the evaluation metrics.
 """
 
 from __future__ import annotations
@@ -10,43 +15,70 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
-import matplotlib
+# Windows: torch bundles Intel's OpenMP runtime, numpy/scipy bring their own. The
+# second one to load aborts the process at the next numpy.linalg call, with a
+# message that blames LAPACK and prints no traceback. Must be set *before* the
+# imports below; the full explanation is in tests/conftest.py. No effect on results.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import matplotlib  # noqa: E402
 
 matplotlib.use("Agg")
 
-import numpy as np
-import torch
-import yaml
-from stable_baselines3 import PPO
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.utils import set_random_seed
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+import yaml  # noqa: E402
+from stable_baselines3 import PPO  # noqa: E402
+from stable_baselines3.common.logger import configure  # noqa: E402
+from stable_baselines3.common.utils import set_random_seed  # noqa: E402
+from stable_baselines3.common.vec_env import (  # noqa: E402
+    DummyVecEnv,
+    SubprocVecEnv,
+    VecMonitor,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from envs.config import config_hash, load_config, validate_structure  # noqa: E402
+from envs.config import (  # noqa: E402
+    apply_override,
+    config_hash,
+    load_config,
+    validate_structure,
+)
 from envs.dynamics_factory import backend_name  # noqa: E402
-from envs.quadrotor_env import QuadrotorEnv  # noqa: E402
+from envs.env_factory import impl_name, make_env as build_env  # noqa: E402
 from eval.plotting import plot_learning_curve  # noqa: E402
 
 
 def check_parallel_backend(config, n_envs: int) -> None:
-    """Reject pybullet + SubprocVecEnv before any run directory is created.
+    """Reject configurations whose workers would share one PyBullet client.
 
-    A PyBullet physics client belongs to exactly one process. With SubprocVecEnv
-    the workers either inherit the parent's DIRECT connection (fork) or receive a
+    A PyBullet client belongs to exactly one process. With SubprocVecEnv the
+    workers either inherit the parent's DIRECT connection (fork) or receive a
     client id that does not exist in the child (spawn, which is what Windows
     uses). Neither raises -- the rollout is simply wrong -- so this has to be
     caught here rather than discovered later by comparing numbers.
+
+    ``env.impl: gpd`` is the exception, and it is a deliberate one: each worker
+    calls ``GPDQuadrotorEnv`` inside its own process and gets its own client, so
+    the constraint does not apply. That only holds because the factories handed
+    to SubprocVecEnv are module-level ``partial``s -- a closure or a pre-built
+    env object would either fail to pickle (spawn) or share one client (fork).
     """
-    if backend_name(config) == "pybullet" and n_envs > 1:
+    if n_envs <= 1:
+        return
+    if impl_name(config) == "gpd":
+        return
+    if backend_name(config) == "pybullet":
         raise SystemExit(
             f"dynamics.backend is 'pybullet' but n_envs={n_envs}.\n"
             "A PyBullet client belongs to one process: SubprocVecEnv workers either\n"
@@ -68,12 +100,21 @@ def unique_run_dir(base: Path, name: str) -> Path:
 
 
 def make_env(rank: int, config: dict):
-    def _init():
-        local = copy.deepcopy(config)
-        local["run"]["seed"] = int(config["run"]["seed"]) + rank
-        return QuadrotorEnv(local)
+    """One worker's env factory, built inside that worker's own process.
 
-    return _init
+    Must stay picklable: ``SubprocVecEnv`` pickles the callables, and on Windows
+    (spawn) a closure over ``config`` cannot be pickled at all. A module-level
+    function wrapped in ``functools.partial`` is the smallest thing that works on
+    both start methods -- and it is also what makes one PyBullet client per
+    worker possible.
+    """
+    return partial(_worker_env, rank, config)
+
+
+def _worker_env(rank: int, config: dict):
+    local = copy.deepcopy(config)
+    local["run"]["seed"] = int(config["run"]["seed"]) + rank
+    return build_env(local)
 
 
 def main() -> int:
@@ -84,6 +125,20 @@ def main() -> int:
     parser.add_argument("--name", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        default=[],
+        metavar="PATH=VALUE",
+        help="override any config key, e.g. --set ppo.n_epochs=5 (repeatable)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="shortcut for --set run.seed=N",
+    )
+    parser.add_argument(
         "--print-config",
         action="store_true",
         help="resolve 'extends' and print the merged config, then exit",
@@ -91,10 +146,13 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    if args.print_config:
-        print(yaml.safe_dump(config, sort_keys=False))
-        print(f"# config_sha256: {config_hash(config)}")
-        return 0
+    # Overrides go on before validation and before --print-config, so both the
+    # checks and the preview see exactly what the run will use.
+    try:
+        for assignment in args.overrides:
+            apply_override(config, assignment)
+    except ValueError as error:
+        parser.error(str(error))
     if args.timesteps is not None:
         config["run"]["total_timesteps"] = int(args.timesteps)
     if args.n_envs is not None:
@@ -103,6 +161,13 @@ def main() -> int:
         config["run"]["name"] = args.name
     if args.device is not None:
         config["run"]["device"] = args.device
+    if args.seed is not None:
+        config["run"]["seed"] = int(args.seed)
+
+    if args.print_config:
+        print(yaml.safe_dump(config, sort_keys=False))
+        print(f"# config_sha256: {config_hash(config)}")
+        return 0
 
     # Refuse to start a long run on a config whose vehicle parameters are still
     # TBD, rather than discovering it at the first environment step.

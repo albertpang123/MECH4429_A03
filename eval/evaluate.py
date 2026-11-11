@@ -9,19 +9,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import torch
-from stable_baselines3 import PPO
+# Windows: torch bundles Intel's OpenMP runtime, numpy/scipy bring their own. The
+# second one to load aborts the process at the next numpy.linalg call, with a
+# message that blames LAPACK and prints no traceback. Must be set *before* the
+# imports below; the full explanation is in tests/conftest.py. No effect on results.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+import torch  # noqa: E402
+from stable_baselines3 import PPO  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from envs.quadrotor_env import QuadrotorEnv  # noqa: E402
+from envs.env_factory import make_env  # noqa: E402
 from eval.plotting import plot_evaluation  # noqa: E402
 
 
@@ -48,7 +55,11 @@ def main() -> int:
         meta = json.load(handle)
     config = meta["config"]
 
-    env = QuadrotorEnv(config)
+    # The implementation is whatever the checkpoint was trained on, because the
+    # resolved config is stored in meta.json. Evaluating a gpd checkpoint on the
+    # legacy env (or the reverse) would compare a policy against a different
+    # machine, so this deliberately does not take a flag.
+    env = make_env(config)
     if int(env.observation_space.shape[0]) != int(meta["observation"]["dim"]):
         raise ValueError("checkpoint observation dimension does not match the environment")
 

@@ -1,19 +1,27 @@
-# Same task and same vehicle data as g3_hover.yaml, but the dynamics run on the
-# PyBullet engine instead of the NumPy stub. Nothing else changes: same
-# observation, reward, fault injector and PPO settings, so a comparison between
-# the two configs isolates the integrator and the ground contact.
+# LEGACY PATH. Same task and same vehicle data as g3_hover.yaml, but our own
+# dynamics integrated by the PyBullet engine instead of the hand-written NumPy
+# one. Nothing else changes -- same observation, reward, fault injector, PPO
+# settings -- so a comparison with the legacy NumPy run isolates the integrator
+# and the ground contact.
+#
+# `env.impl: legacy` is explicit and load-bearing. Since 2026-11-10 the default
+# implementation is `gpd` (BaseAviary + cf2x.urdf), which ignores `dynamics.*`
+# entirely: without this line the config would silently train the gpd vehicle
+# and the filename would be a lie.
+#
+# This is not the comparison that matters any more. The one that does is
+#   python tools/crosscheck_gpd.py
+# which puts this backend, the NumPy one and gpd side by side.
 #
 # Usage:
 #   python -m train.train_ppo --config configs/g3_pybullet.yaml --timesteps 4096 --name smoke_pybullet
-#
-# The two backends agree to 0.041 mm over 4 s while airborne (see
-# tests/test_pybullet_backend.py). While training, contact with the ground plane
-# produces a crash response the NumPy backend cannot model -- that is the point
-# of this config, and the reason its curve is not expected to match g3_hover.
 
 extends: g3_hover.yaml
 
 status: g3-smoke-pybullet
+
+env:
+  impl: legacy
 
 run:
   name: g3_pybullet_hover

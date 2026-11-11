@@ -132,10 +132,18 @@ def main() -> int:
     # The replay is CPU-only; keep it from picking up a GPU and changing nothing
     # but the startup cost.
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
+    # torch and numpy/scipy bring two OpenMP runtimes; on Windows the second one
+    # aborts the process at the first numpy.linalg call. See tests/conftest.py.
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
     from eval import replay  # imported late: needs the environment in place
 
-    has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    # Windows always has a window system, and PyBullet opens its GUI there without
+    # DISPLAY being set; checking only the X11 variables would silently force a
+    # GIF on every Windows run.
+    has_display = bool(
+        _WINDOWS or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
     args = _build_arguments(sys.argv[1:])
 
     if not has_display and "--record" not in args:

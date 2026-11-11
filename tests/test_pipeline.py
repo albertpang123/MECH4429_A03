@@ -68,6 +68,9 @@ def test_pybullet_backend_rejects_parallel_envs():
     from train.train_ppo import check_parallel_backend
 
     config = copy.deepcopy(CONFIG)
+    # The guard is about the *legacy* env, whose workers would share one client.
+    # `gpd` workers build their own env in their own process, so it is exempt.
+    config["env"]["impl"] = "legacy"
     config["dynamics"]["backend"] = "pybullet"
 
     check_parallel_backend(config, 1)  # single process is the supported path
@@ -76,3 +79,7 @@ def test_pybullet_backend_rejects_parallel_envs():
 
     config["dynamics"]["backend"] = "numpy"
     check_parallel_backend(config, 4)  # the NumPy stub is picklable, so this is fine
+
+    config["env"]["impl"] = "gpd"
+    config["dynamics"]["backend"] = "pybullet"
+    check_parallel_backend(config, 4)  # gpd workers own their clients

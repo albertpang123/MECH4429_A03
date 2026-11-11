@@ -23,6 +23,15 @@ env:
   control_hz: 60           # policy rate; exactly 4 physics steps per action
   episode_length_s: 10.0   # 600 control steps
   target_position: [0.0, 0.0, 1.0]   # hold point, world ENU, m
+  # Which implementation runs this task (see envs/env_factory.py):
+  #   gpd    = envs/gpd_env.py, our task on gym-pybullet-drones' BaseAviary
+  #            (default from 2026-11-10; vehicle = the published cf2x URDF)
+  #   legacy = envs/quadrotor_env.py, our own physics with the placeholder
+  #            vehicle below -- this is what produced the G0-G4 numbers
+  impl: gpd
+  # gpd's physics variant: pyb | pyb_gnd | pyb_drag | pyb_dw | pyb_gnd_drag_dw.
+  # Only read when impl is gpd; "pyb" is its plain force model.
+  gpd_physics: pyb
 
 reset:
   position_jitter_m: 0.10

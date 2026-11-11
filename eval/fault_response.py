@@ -26,15 +26,23 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
+import sys
 from pathlib import Path
 
-import numpy as np
-import torch
-from stable_baselines3 import PPO
+# Windows: two OpenMP runtimes in one process abort at the next numpy.linalg call.
+# Must precede the heavy imports; see tests/conftest.py. No effect on results.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-from envs.quadrotor_env import QuadrotorEnv
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from stable_baselines3 import PPO  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from envs.env_factory import make_env  # noqa: E402
 
 
 def _resolve_checkpoint(value: str) -> Path:
@@ -74,7 +82,7 @@ def run(checkpoint: Path, episodes: int | None, seed_start: int | None, out: Pat
     fixed = fault_cfg["fixed"]
     failed_rotor = int(fixed["rotor_id"])
 
-    env = QuadrotorEnv(config)
+    env = make_env(config)          # whatever the checkpoint trained on
     model = PPO.load(checkpoint, env=env, device="cpu")
     model.policy.set_training_mode(False)
     torch.set_num_threads(1)
@@ -83,7 +91,7 @@ def run(checkpoint: Path, episodes: int | None, seed_start: int | None, out: Pat
     n_episodes = int(episodes if episodes is not None else eval_cfg.get("episodes", 10))
     first_seed = int(seed_start if seed_start is not None else eval_cfg.get("seed_start", 100000))
     dt = env.control_dt
-    hover = float(env.dynamics.hover_command[0])
+    hover = float(env.hover_action)
 
     rows: list[dict] = []
     pre_commands: list[np.ndarray] = []
@@ -142,9 +150,13 @@ def run(checkpoint: Path, episodes: int | None, seed_start: int | None, out: Pat
 
     mean_pre = _mean_or_nan(pre_commands)
     mean_post = _mean_or_nan(post_commands)
-    thrust_pre = env.dynamics.applied_thrusts(mean_pre)
-    thrust_post = env.dynamics.applied_thrusts(mean_post)
-    weight = env.dynamics.params.mass_kg * 9.81
+    # Through the environment, not through its dynamics object: the two
+    # implementations have different force models (the stub's placeholder is
+    # linear in the command, gpd's cf2x is KF*rpm^2), and this report has to be
+    # right for whichever one the checkpoint was trained on.
+    thrust_pre = env.applied_thrusts(mean_pre)
+    thrust_post = env.applied_thrusts(mean_post)
+    weight = env.mass_kg * 9.81
     survivors = sum(int(r["survived"]) for r in rows)
 
     summary = {
@@ -183,7 +195,7 @@ def run(checkpoint: Path, episodes: int | None, seed_start: int | None, out: Pat
         tag = "  <- failed" if i == failed_rotor else ""
         print(f"    R{i}   {mean_pre[i]:6.3f}  {mean_post[i]:6.3f}  "
               f"{mean_post[i] - mean_pre[i]:+7.3f}  {thrust_post[i]:8.3f}{tag}")
-    print(f"\n  hover command was {hover:.3f} on all four = {hover * 4 * env.dynamics.params.thrust_max_per_rotor_n:.3f} N"
+    print(f"\n  hover command was {hover:.3f} on all four = {np.sum(env.applied_thrusts(np.full(4, hover))):.3f} N"
           f" for a {weight:.3f} N weight")
     print(f"  after the fault the three survivors sum to {np.sum(thrust_post):.3f} N "
           f"= {np.sum(thrust_post) / weight * 100:.1f} % of the weight")

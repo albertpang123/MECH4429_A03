@@ -21,23 +21,29 @@ In the window: drag to orbit, scroll to zoom, space pauses, q quits.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import numpy as np
-import torch
-from stable_baselines3 import PPO
+# Windows: two OpenMP runtimes in one process abort at the next numpy.linalg call.
+# Must precede the heavy imports; see tests/conftest.py. No effect on results.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
+from stable_baselines3 import PPO  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from envs.env_factory import make_env  # noqa: E402
 from envs.interface import ROTOR_LAYOUT, nominal_x_positions  # noqa: E402
-from envs.quadrotor_env import QuadrotorEnv  # noqa: E402
 from eval.evaluate import resolve_checkpoint  # noqa: E402
 
 try:  # optional dependency: only this module needs it
@@ -46,7 +52,9 @@ try:  # optional dependency: only this module needs it
 except ImportError as exc:  # pragma: no cover - environment dependent
     raise ImportError(
         "3D replay needs PyBullet. Install it into the same environment:\n"
-        "    pip install pybullet==3.2.7"
+        "    Linux:   pip install pybullet\n"
+        "    Windows: conda install -c conda-forge pybullet=3.25  (this is 3.2.5;\n"
+        "             PyPI ships no Windows wheel, see environment.yml)"
     ) from exc
 
 # rgba in [0, 1]. Blue = healthy rotor, orange = failed rotor, aqua = target:
@@ -81,8 +89,33 @@ def rotor_positions_body_m(config: dict) -> np.ndarray:
     return np.asarray(positions, dtype=np.float64)
 
 
+def drawing_config(config: dict, env) -> dict:
+    """The config that describes the vehicle ``env`` actually simulates.
+
+    ``legacy`` reads its vehicle from ``dynamics.*``, so the config is already
+    right. ``gpd`` reads ``cf2x.urdf`` instead, and the stub numbers left in the
+    config are a much larger airframe (arm 0.065 m vs 0.040 m, 0.5 kg vs
+    0.027 kg) — drawing those under a trajectory produced by the other vehicle
+    puts a model of the wrong size on the path. Returns a copy; the caller's
+    config is not modified.
+    """
+    positions = getattr(env, "rotor_positions_body_m", None)
+    if positions is None:                     # legacy: config is the truth
+        return config
+    merged = copy.deepcopy(config)
+    dynamics = merged["dynamics"]
+    dynamics["rotor_positions_body_m"] = np.asarray(positions, dtype=np.float64).tolist()
+    mass = getattr(env, "mass_kg", None)
+    if mass is not None:
+        dynamics["mass_kg"] = float(mass)
+        # Let urdf_from_config derive inertia from the new mass; the stub's
+        # absolute values belong to a 0.5 kg body and are ~15x too large here.
+        dynamics["inertia_kgm2"] = None
+    return merged
+
+
 def airframe_dimensions(rotor_positions: np.ndarray) -> dict:
-    """Drawing dimensions derived from the configured rotor positions.
+    """Drawing dimensions derived from the rotor positions.
 
     Only the layout is derived — nothing here is a vehicle parameter, so the
     model follows the config when Andy's CAD numbers land.
@@ -206,7 +239,7 @@ def _quat_aligning_z_with(axis: np.ndarray) -> list:
 
 
 # --------------------------------------------------------------------- recording
-def record_episode(model: PPO, env: QuadrotorEnv, seed: int) -> dict:
+def record_episode(model: PPO, env, seed: int) -> dict:
     """Roll out one deterministic episode and keep everything needed to draw it."""
     obs, info = env.reset(seed=seed)
     scenario = dict(info["scenario"])
@@ -680,7 +713,7 @@ def main() -> int:
         meta = json.load(handle)
     config = meta["config"]
 
-    env = QuadrotorEnv(config)
+    env = make_env(config)          # whatever the checkpoint trained on
     model = PPO.load(checkpoint, env=env, device="cpu")
     model.policy.set_training_mode(False)
     torch.set_num_threads(1)
@@ -704,9 +737,11 @@ def main() -> int:
     )
 
     gif_path = Path(args.record) if args.record else None
+    # Draw the airframe the episode was actually flown on. The trajectory is
+    # already recorded, so this only affects the model's size on screen.
     run_replay(
         episode,
-        config,
+        drawing_config(config, env),
         live=gif_path is None,
         speed=args.speed,
         camera_distance=args.camera_distance,

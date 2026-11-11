@@ -4,45 +4,79 @@
 #   conda activate uav-g3
 #
 # Versions are pinned to the ones every reported number was produced with. If you
-# change a pin, re-run `python run.py --run test_backend` and `pytest tests -q`
+# change a pin, re-run `python run.py --run tests` and `python run.py --run doctor`
 # and say so in the pull request -- a silent version bump is how results stop
 # being reproducible.
 #
-# pybullet is listed under pip because that is how it was installed on the
-# reference machine (built from source on Linux). On Windows, if pip has no
-# wheel for your Python, use the conda-forge package instead:
-#     conda install -c conda-forge pybullet=3.2.7
-# pybullet is only needed for the 3D replay and for `dynamics.backend: pybullet`;
-# training and the whole test suite except tests/test_pybullet_backend.py run
-# without it.
+# What changed on 2026-11-10, and why
+# -----------------------------------
+# The project moved onto gym-pybullet-drones as its foundation (third_party/, see
+# third_party/NOTICE.md): the default environment is now a BaseAviary subclass.
+# gpd requires gymnasium and numpy 2.x, neither of which the previous stack
+# (gym 0.29 / numpy 1.26 / SB3 2.2.1 / torch 2.0.1) could provide, so this file
+# pins the versions actually verified on Windows 11 / CPython 3.12.16:
 #
-# Why torch is pinned instead of left to stable-baselines3
-# --------------------------------------------------------
-# SB3 2.2.1 declares `torch>=1.13`, so an unpinned install resolves to whatever
-# is newest. On Windows that is a CUDA 12 build of the latest torch, and from
-# torch 2.6 on, `torch.load` defaults to `weights_only=True`, which breaks how
-# SB3 <=2.4 restores a PPO policy from `model.zip`. The symptom is a
-# `WeightsUnpickler` error when evaluating a checkpoint -- not at install time,
-# which is why it is easy to hit only on the teammate who did a fresh install.
-# 2.0.1 is the version on the reference machine and can read every checkpoint in
-# this repository. It is the cu117 build on both platforms and runs fine on CPU;
-# the download is ~2.2 GB. If you want a small CPU-only install instead, use
-#     pip install torch==2.0.1 --index-url https://download.pytorch.org/whl/cpu
-# and say so, because it changes the pinned set.
+#   89 passed in 6.7 s  -- `python run.py --run tests`
+#   PPO smoke run, 2 SubprocVecEnv workers, 4096 steps, exit 0
+#
+# pybullet: install it from conda-forge, never from PyPI
+# ------------------------------------------------------
+# PyPI ships **no Windows wheel** for pybullet at any modern version: 3.2.7 is an
+# 80 MB source tarball, and `pip install pybullet` on Windows fails unless MSVC
+# Build Tools are installed. conda-forge publishes it for both platforms, so it
+# is a conda dependency here rather than a pip one -- one file, one command, both
+# operating systems.
+#
+# conda-forge numbers this release 3.25; the package itself is pybullet 3.2.5
+# (`importlib.metadata.version("pybullet")` confirms). That is not 3.2.7, but
+# tests/test_pybullet_backend.py passes on it unchanged: 15/15, Windows 11 /
+# CPython 3.12 / numpy 2.5.4, 2026-11-10.
+#
+# KMP_DUPLICATE_LIB_OK: why you will see it in the code
+# -----------------------------------------------------
+# torch bundles Intel's OpenMP runtime; numpy/scipy from conda-forge bring MKL's.
+# When both are loaded in one process, the second one aborts the whole process at
+# the next LAPACK call. The symptom is `Fatal Python error: Aborted` with the top
+# frame inside `numpy.linalg.inv` and no Python traceback -- it looks like a bug
+# in the physics code and is not. Every entry point sets
+# `os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")` before importing torch
+# (train/train_ppo.py, eval/*, run.py, tools/platform_check.py, tests/conftest.py),
+# so no manual `set` is needed. If you write a new entry point, do the same.
+#
+# torch is still pinned rather than left to stable-baselines3
+# ----------------------------------------------------------
+# An unpinned install resolves to whatever is newest, and then two machines with
+# "the same" environment produce different numbers. The CPU wheel is also ~10x
+# smaller than the CUDA one and this project trains on CPU only:
+#   pip install torch==2.15.0 --index-url https://download.pytorch.org/whl/cpu
+# is what produced the pinned set below.
 name: uav-g3
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - python=3.10
-  - numpy=1.26.4
-  - pandas=2.0.3
-  - matplotlib=3.7.5
+  - python=3.12.16
+  - numpy=2.5.4
+  - scipy=1.18.1
+  - matplotlib=3.11.2
+  - pillow=13.0.0
+  - gymnasium=1.3.0
+  - transforms3d=0.4.2
+  - cloudpickle=3.1.2
+  - pybullet=3.25                # == pybullet 3.2.5; see above, do not pip-install
   - pyyaml
-  - pytest=7.4.4
+  - pandas=3.1.1
+  - pytest
   - pip
   - pip:
-      - torch==2.0.1                 # see the note above -- do not let pip pick this
-      - gymnasium==0.29.1
-      - stable-baselines3==2.2.1
-      - pybullet==3.2.7
+      # The +cpu wheel exists only on PyTorch's own index, not on PyPI; without
+      # this line `torch==2.15.0+cpu` cannot be found.
+      - --extra-index-url https://download.pytorch.org/whl/cpu
+      - torch==2.15.0+cpu         # see the note above -- do not let pip pick this
+      - stable-baselines3==2.9.2
+      # Only for two of the vendored gym-pybullet-drones examples, not for our task:
+      # pettingzoo -> the upstream PettingZoo test (`python run.py --run gpd_tests`),
+      # control    -> `mrac.py` (`python run.py --run gpd_mrac`, python-control).
+      # Keeping them here means those menu items work on a fresh environment
+      # instead of failing on import.
+      - pettingzoo==1.27.0
+      - control==0.10.2

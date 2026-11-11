@@ -4,6 +4,7 @@ These tests are deliberately dependency-light (numpy + pyyaml + pytest) so they
 run before the simulator is installed.
 """
 
+import copy
 import inspect
 from dataclasses import fields
 from pathlib import Path
@@ -107,10 +108,35 @@ def test_unresolved_values_are_reported_for_the_base_config():
 
 
 def test_running_refuses_a_config_with_unfilled_vehicle_parameters():
-    validate_structure(CONFIG)  # structure alone is fine
+    """The vehicle-parameter guard is the legacy env's, and it still works.
+
+    ``base.yaml`` now carries ``env.impl: gpd``, so it is exempt from the
+    ``dynamics.*`` check (see the test below). The guard itself must still fire
+    for the implementation that does read those values.
+    """
+    config = copy.deepcopy(CONFIG)          # base.yaml: vehicle parameters are null
+    config["env"]["impl"] = "legacy"
+    validate_structure(config)              # structure alone is fine
     with pytest.raises(ValueError, match="dynamics"):
-        validate_structure(CONFIG, expect_resolved=True)
+        validate_structure(config, expect_resolved=True)
     validate_structure(G3, expect_resolved=True)  # the stub run is complete
+
+
+def test_unfilled_vehicle_parameters_are_allowed_only_for_gpd():
+    """`env.impl: gpd` reads the vehicle from the URDF, so `dynamics.*` is unused.
+
+    Pinning this both ways: a gpd config may leave them null, and switching the
+    same config to `legacy` must still be refused -- otherwise the exemption has
+    quietly disabled the guard for the path that needs it.
+    """
+    config = copy.deepcopy(CONFIG)
+    config["env"]["impl"] = "gpd"
+    assert "dynamics.mass_kg" in unresolved_paths(config)   # nothing filled in
+    validate_structure(config, expect_resolved=True)        # no exception
+
+    config["env"]["impl"] = "legacy"
+    with pytest.raises(ValueError, match="dynamics"):
+        validate_structure(config, expect_resolved=True)
 
 
 # ---------------------------------------------------------------------------

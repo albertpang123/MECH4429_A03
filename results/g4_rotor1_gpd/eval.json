@@ -1,0 +1,32 @@
+{
+  "run_name": "g4_rotor1_gpd",
+  "checkpoint": "checkpoints\\g4_rotor1_gpd\\model.zip",
+  "episodes": 20,
+  "seed_start": 100000,
+  "seed_end": 100019,
+  "deterministic": true,
+  "return_mean": -85.24698938305043,
+  "return_std": 1.7700886193110665,
+  "length_mean": 39.6,
+  "final_position_error_mean_m": 0.976841870251841,
+  "final_position_error_max_m": 1.0021014151705327,
+  "max_position_error_m": 1.0021014151705327,
+  "position_rmse_mean_m": 0.39509531195216757,
+  "crash_rate": 1.0,
+  "out_of_bounds_rate": 0.0,
+  "timeout_rate": 0.0,
+  "all_survived": false,
+  "observation_normalisation": {
+    "dim": 170,
+    "history_len": 10,
+    "normalize": true,
+    "clip": 10.0,
+    "scales": {
+      "position_error": 1.0,
+      "linear_velocity": 1.0,
+      "attitude_quaternion": 1.0,
+      "angular_velocity": 10.0,
+      "last_motor_command": 1.0
+    }
+  }
+}

@@ -25,7 +25,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import yaml
 
@@ -95,6 +95,47 @@ def config_hash(config: Mapping[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+def apply_override(config: Dict[str, Any], assignment: str) -> None:
+    """Set one dotted path from a ``path=value`` string, in place.
+
+    This is what lets a comparison or an ablation be one command instead of one
+    YAML file per combination (``train/train_ppo.py --set``, ``train/sweep.py``).
+    The value is parsed by ``yaml.safe_load``, so ``2.0`` is a float, ``true`` a
+    bool, ``[64, 128]`` a list and ``null`` a null.
+
+    A path that does not already exist is rejected.  Merging a misspelt key
+    would otherwise look successful while the run quietly used the old value --
+    exactly the kind of silent no-op this project keeps getting bitten by.
+    """
+    path, separator, raw = assignment.partition("=")
+    path = path.strip()
+    if not separator or not path:
+        raise ValueError(f"expected path=value, got {assignment!r}")
+
+    keys = path.split(".")
+    if any(key.startswith("_") for key in keys):
+        raise ValueError(f"{path}: keys starting with '_' are internal")
+    node: Any = config
+    walked: List[str] = []
+    for key in keys[:-1]:
+        if not isinstance(node, Mapping) or key not in node:
+            raise ValueError(_unknown_key(path, walked, node))
+        walked.append(key)
+        node = node[key]
+    leaf = keys[-1]
+    if not isinstance(node, MutableMapping) or leaf not in node:
+        raise ValueError(_unknown_key(path, keys[:-1], node))
+    node[leaf] = yaml.safe_load(raw)
+
+
+def _unknown_key(path: str, container: Sequence[str], node: Any) -> str:
+    """Name the mapping that was searched, so the hint's keys are the right ones."""
+    where = ".".join(container) or "<root>"
+    known = ", ".join(sorted(str(key) for key in node)) if isinstance(node, Mapping) else None
+    hint = f" (known keys: {known})" if known else f" ({type(node).__name__})"
+    return f"{path}: no such key at {where}{hint}"
+
+
 def unresolved_paths(config: Mapping[str, Any]) -> List[str]:
     """Dotted paths whose value is still ``null`` (a TBD owned by someone)."""
     found: List[str] = []
@@ -119,6 +160,18 @@ def _require_mapping(config: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+def _impl(config: Mapping[str, Any]) -> str:
+    """``env.impl`` with its default applied, from the one place that owns it.
+
+    Imported inside the function so that ``envs.config`` stays importable
+    without pulling in ``envs.env_factory``'s lazily-loaded branch, and so the
+    default is not written down twice.
+    """
+    from envs.env_factory import impl_name
+
+    return impl_name(config)
+
+
 def validate_structure(config: Mapping[str, Any], *, expect_resolved: bool = False) -> None:
     """Fail fast on a malformed or incomplete config.
 
@@ -127,6 +180,10 @@ def validate_structure(config: Mapping[str, Any], *, expect_resolved: bool = Fal
     long training run.  Only ``dynamics`` is checked — a ``null`` elsewhere (for
     example ``termination.tilt_limit_deg``) can mean "deliberately unused", and
     that is a decision the code should not second-guess.
+
+    ``env.impl: gpd`` is exempt from that check: the vehicle comes from gpd's
+    ``cf2x.urdf``, so ``dynamics.*`` is not read at all and a gpd config is
+    allowed to leave it null.  For ``legacy`` nothing changes.
     """
     missing = [section for section in REQUIRED_SECTIONS if section not in config]
     if missing:
@@ -152,7 +209,7 @@ def validate_structure(config: Mapping[str, Any], *, expect_resolved: bool = Fal
     if not isinstance(observation.get("scales"), Mapping):
         raise TypeError("observation.scales must be a mapping of field name -> scale")
 
-    if expect_resolved:
+    if expect_resolved and _impl(config) != "gpd":
         unresolved = [
             path for path in unresolved_paths(config) if path.startswith("dynamics.")
         ]

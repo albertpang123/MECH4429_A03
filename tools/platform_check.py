@@ -14,15 +14,22 @@ Checks, in order:
    sequence, printed to full precision. Two machines that agree here produce the
    same training data; two that disagree mean a dependency differs.
 
-Exit code 0 = everything needed for training works. The PyBullet section failing
-only matters if you plan to use the 3D replay or `dynamics.backend: pybullet`.
+Exit code 0 = everything needed for training works. PyBullet is **required** as
+of the gym-pybullet-drones migration: the default env implementation (`env.impl:
+gpd`) is a `BaseAviary` subclass, so a machine without pybullet can only run the
+legacy NumPy path.
 """
 
 from __future__ import annotations
 
+import os
 import platform
 import sys
 from pathlib import Path
+
+# Windows: torch and numpy/scipy each load an OpenMP runtime; the second one to
+# load aborts at the next numpy.linalg call. See tests/conftest.py.
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -35,8 +42,9 @@ REQUIRED = (
     ("pandas", None),
     ("matplotlib", None),
     ("yaml", "pyyaml"),
+    ("pybullet", None),
 )
-OPTIONAL = (("pybullet", None),)
+OPTIONAL = ()
 
 #: The published action sequence for the determinism check. Do not change it: its
 #: output is what other machines compare against.
@@ -98,6 +106,40 @@ def _hover_steps(backend: str) -> str | None:
         env.close()
 
 
+def _gpd_steps() -> str | None:
+    """Ten hover steps on the default implementation: `BaseAviary` + cf2x URDF."""
+    import numpy as np
+
+    from envs.config import load_config
+    from envs.env_factory import impl_name, make_env
+
+    config = load_config(ROOT / CHECK_CONFIG)
+    name = impl_name(config)
+    env = make_env(config)
+    try:
+        _, info = env.reset(seed=0)
+        start = info["position"].copy()
+        command = np.full(4, env.hover_action)
+        for _ in range(10):
+            _, _, terminated, truncated, info = env.step(command)
+            if terminated or truncated:
+                return f"episode ended early: {info['done_reason']}"
+        state = env.state
+        if abs(state.position[2] - start[2]) > 0.05:
+            return f"height moved {state.position[2] - start[2]:+.3f} m in 0.1 s"
+        layout = env.rotor_layout
+        print(f"  implementation       {name}")
+        print(f"  vehicle              mass {layout['mass_kg']:.4f} kg, "
+              f"arm {layout['arm_length_m']:.4f} m, T/W {layout['thrust_to_weight']:.3f}")
+        print(f"  hover command        {layout['hover_action']:.4f} "
+              f"({layout['hover_rpm']:.0f} of {layout['max_rpm']:.0f} rpm)")
+        print("  our rotor -> gpd link "
+              + " ".join(f"R{k}->{v}" for k, v in layout["our_index_to_gpd_link"].items()))
+        return None
+    finally:
+        env.close()
+
+
 def _determinism_digest() -> str:
     """A fixed, published rollout -- the thing two machines must agree on."""
     import numpy as np
@@ -132,8 +174,9 @@ def main() -> int:
 
     _section("dependencies (required)")
     required_ok = _versions(REQUIRED, required=True)
-    _section("dependencies (optional)")
-    _versions(OPTIONAL, required=False)
+    if OPTIONAL:
+        _section("dependencies (optional)")
+        _versions(OPTIONAL, required=False)
 
     _section("numpy dynamics backend")
     try:
@@ -151,13 +194,26 @@ def main() -> int:
         problem = "exception"
     print("  ok" if problem is None else f"  skipped/failed: {problem}")
 
-    _section(f"determinism digest ({CHECK_STEPS} control steps)")
+    _section("default environment (env.impl: gpd)")
+    try:
+        problem = _gpd_steps()
+    except Exception as exc:                          # noqa: BLE001
+        print(f"  FAILED: {exc.__class__.__name__}: {exc}")
+        problem = "exception"
+    print("  ok" if problem is None else f"  FAILED: {problem}")
+    if problem is not None:
+        required_ok = False
+
+    _section(f"determinism digest ({CHECK_STEPS} control steps, legacy env)")
     digest = None
     try:
         digest = _determinism_digest()
         print("  " + digest)
         print("\n  Compare this digest with the other machine. Identical numbers = the")
         print("  same training data; different numbers = a dependency differs.")
+        print("  It is produced by the LEGACY NumPy env, so it tracks only that path.")
+        print("  The stack moved on 2026-11-10 (numpy 1.26 -> 2.5, gym -> gymnasium):")
+        print("  a mismatch against output from before then is the stack, not the machine.")
     except Exception as exc:                          # noqa: BLE001
         print(f"  FAILED: {exc.__class__.__name__}: {exc}")
 
